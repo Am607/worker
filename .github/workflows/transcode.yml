@@ -7,7 +7,7 @@
 #   1. Add Infisical machine identity secrets as encrypted Actions secrets:
 #        INFISICAL_CLIENT_ID
 #        INFISICAL_CLIENT_SECRET
-#        INFISICAL_PROJECT_ID
+#        INFISICAL_PROJECT_SLUG
 #        INFISICAL_ENV_SLUG     # e.g. "prod"
 #   2. Store these in Infisical at the project root (or wherever, then set
 #      INFISICAL_SECRET_PATH accordingly):
@@ -68,7 +68,7 @@ jobs:
         with:
           client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
           client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
-          project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
           env-slug: ${{ secrets.INFISICAL_ENV_SLUG }}
           secret-path: ${{ vars.INFISICAL_SECRET_PATH || '/' }}
           export-type: env
