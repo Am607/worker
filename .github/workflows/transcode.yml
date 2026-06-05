@@ -74,10 +74,32 @@ jobs:
           export-type: env
           # The action masks fetched values in logs by default.
 
-      - name: Install ffmpeg
+      - name: Cache ffmpeg apt package
+        uses: awalsh128/cache-apt-pkgs-action@v1.4.3
+        with:
+          packages: ffmpeg
+          version: 1.0
+
+      - name: Cache AWS CLI v2
+        id: cache-awscli
+        uses: actions/cache@v4
+        with:
+          path: /opt/aws-cli
+          key: awscli-v2-${{ runner.os }}-${{ runner.arch }}-v1
+
+      - name: Install AWS CLI v2
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg awscli
+          set -euo pipefail
+          if [ ! -x /opt/aws-cli/v2/current/bin/aws ]; then
+            tmp=$(mktemp -d)
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "$tmp/awscliv2.zip"
+            unzip -q "$tmp/awscliv2.zip" -d "$tmp"
+            sudo "$tmp/aws/install" --install-dir /opt/aws-cli/v2 --bin-dir /opt/aws-cli/bin
+            rm -rf "$tmp"
+          else
+            sudo "/opt/aws-cli/v2/current/bin/aws" --version >/dev/null
+          fi
+          echo "/opt/aws-cli/bin" >> "$GITHUB_PATH"
 
       - name: Configure AWS CLI for R2
         run: |
