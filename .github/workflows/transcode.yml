@@ -84,22 +84,25 @@ jobs:
         id: cache-awscli
         uses: actions/cache@v4
         with:
-          path: /opt/aws-cli
-          key: awscli-v2-${{ runner.os }}-${{ runner.arch }}-v1
+          path: |
+            /opt/aws-cli
+            /opt/aws-bin
+          key: awscli-v2-${{ runner.os }}-${{ runner.arch }}-v2
 
       - name: Install AWS CLI v2
         run: |
           set -euo pipefail
-          if [ ! -x /opt/aws-cli/v2/current/bin/aws ]; then
+          if [ ! -x /opt/aws-bin/aws ]; then
             tmp=$(mktemp -d)
             curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "$tmp/awscliv2.zip"
             unzip -q "$tmp/awscliv2.zip" -d "$tmp"
-            sudo "$tmp/aws/install" --install-dir /opt/aws-cli/v2 --bin-dir /opt/aws-cli/bin
+            sudo mkdir -p /opt/aws-cli /opt/aws-bin
+            sudo "$tmp/aws/install" --install-dir /opt/aws-cli --bin-dir /opt/aws-bin
             rm -rf "$tmp"
           else
-            sudo "/opt/aws-cli/v2/current/bin/aws" --version >/dev/null
+            "/opt/aws-bin/aws" --version >/dev/null
           fi
-          echo "/opt/aws-cli/bin" >> "$GITHUB_PATH"
+          echo "/opt/aws-bin" >> "$GITHUB_PATH"
 
       - name: Configure AWS CLI for R2
         run: |
