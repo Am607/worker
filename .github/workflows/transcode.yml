@@ -1,0 +1,206 @@
+# Video transcode pipeline (raw R2 -> HLS R2 -> notify backend).
+#
+# Copy this file to the PUBLIC action repo at .github/workflows/transcode.yml.
+# Triggered by soai-backend via the GitHub `repository_dispatch` REST API.
+#
+# Setup on the action repo:
+#   1. Add Infisical machine identity secrets as encrypted Actions secrets:
+#        INFISICAL_CLIENT_ID
+#        INFISICAL_CLIENT_SECRET
+#        INFISICAL_PROJECT_ID
+#        INFISICAL_ENV_SLUG     # e.g. "prod"
+#   2. Store these in Infisical at the project root (or wherever, then set
+#      INFISICAL_SECRET_PATH accordingly):
+#        R2_ACCESS_KEY_ID       # scope: GetObject raw/*, PutObject hls/* only
+#        R2_SECRET_ACCESS_KEY   # (NOT the same key the backend uses for presign — A6)
+#        R2_ENDPOINT            # https://<account>.r2.cloudflarestorage.com
+#        R2_BUCKET
+#        R2_PUBLIC_BASE         # e.g. https://cdn.soai.app
+#        TRANSCODE_WEBHOOK_SECRET   # shared with backend; used for HMAC signing (A1)
+#   3. Allow the soai-backend PAT (actions:write on this repo) to dispatch.
+
+name: transcode-video
+
+on:
+  repository_dispatch:
+    types: [transcode_video]
+
+# A second dispatch for the same submodule cancels the in-flight job — only
+# the latest upload matters.
+concurrency:
+  group: transcode-${{ github.event.client_payload.submodule_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  transcode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      SUBMODULE_ID: ${{ github.event.client_payload.submodule_id }}
+      SOURCE_KEY: ${{ github.event.client_payload.source_key }}
+      CALLBACK_URL: ${{ github.event.client_payload.callback_url }}
+
+    steps:
+      - name: Validate payload
+        run: |
+          set -euo pipefail
+          # submodule_id must be a positive integer
+          case "$SUBMODULE_ID" in
+            ''|*[!0-9]*) echo "invalid submodule_id"; exit 1 ;;
+          esac
+          # source_key must live under raw/<submodule_id>/
+          case "$SOURCE_KEY" in
+            raw/$SUBMODULE_ID/*) ;;
+            *) echo "source_key outside raw/$SUBMODULE_ID/"; exit 1 ;;
+          esac
+          # callback_url must be https://
+          case "$CALLBACK_URL" in
+            https://*) ;;
+            *) echo "callback_url must be https"; exit 1 ;;
+          esac
+
+      - name: Load secrets from Infisical
+        uses: Infisical/secrets-action@v1.0.7
+        with:
+          client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
+          env-slug: ${{ secrets.INFISICAL_ENV_SLUG }}
+          secret-path: ${{ vars.INFISICAL_SECRET_PATH || '/' }}
+          export-type: env
+          # The action masks fetched values in logs by default.
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg awscli
+
+      - name: Configure AWS CLI for R2
+        run: |
+          mkdir -p ~/.aws
+          # No credential file — env vars from Infisical already cover it.
+          # Just pin region (R2 uses "auto").
+          echo "AWS_DEFAULT_REGION=auto" >> $GITHUB_ENV
+          echo "AWS_REGION=auto"         >> $GITHUB_ENV
+
+      - name: Download raw video from R2
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          aws s3 cp "s3://${R2_BUCKET}/${SOURCE_KEY}" work/input \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --no-progress
+
+      - name: Probe duration
+        id: probe
+        run: |
+          set -euo pipefail
+          dur=$(ffprobe -v error -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 work/input | awk '{printf "%d\n", $1}')
+          echo "duration_sec=$dur" >> $GITHUB_OUTPUT
+
+      - name: Transcode to HLS ladder
+        run: |
+          set -euo pipefail
+          mkdir -p out/v0 out/v1 out/v2
+          ffmpeg -y -hide_banner -i work/input \
+            -filter_complex "[0:v]split=3[v1][v2][v3]; \
+              [v1]scale=w=640:h=360:force_original_aspect_ratio=decrease[v1out]; \
+              [v2]scale=w=1280:h=720:force_original_aspect_ratio=decrease[v2out]; \
+              [v3]scale=w=1920:h=1080:force_original_aspect_ratio=decrease[v3out]" \
+            -map "[v1out]" -c:v:0 libx264 -preset veryfast -profile:v main \
+              -b:v:0 800k  -maxrate:v:0 856k  -bufsize:v:0 1200k -g 48 -keyint_min 48 -sc_threshold 0 \
+            -map "[v2out]" -c:v:1 libx264 -preset veryfast -profile:v main \
+              -b:v:1 2800k -maxrate:v:1 2996k -bufsize:v:1 4200k -g 48 -keyint_min 48 -sc_threshold 0 \
+            -map "[v3out]" -c:v:2 libx264 -preset veryfast -profile:v high \
+              -b:v:2 5000k -maxrate:v:2 5350k -bufsize:v:2 7500k -g 48 -keyint_min 48 -sc_threshold 0 \
+            -map a:0? -c:a:0 aac -b:a:0 96k  -ac 2 \
+            -map a:0? -c:a:1 aac -b:a:1 128k -ac 2 \
+            -map a:0? -c:a:2 aac -b:a:2 192k -ac 2 \
+            -f hls -hls_time 6 -hls_playlist_type vod -hls_flags independent_segments \
+            -hls_segment_filename "out/v%v/seg_%03d.ts" \
+            -master_pl_name master.m3u8 \
+            -var_stream_map "v:0,a:0 v:1,a:1 v:2,a:2" \
+            "out/v%v/playlist.m3u8"
+
+      - name: Upload HLS output to R2
+        run: |
+          set -euo pipefail
+          DEST="hls/${SUBMODULE_ID}"
+          aws s3 sync out/ "s3://${R2_BUCKET}/${DEST}/" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --no-progress \
+            --cache-control "public, max-age=31536000, immutable" \
+            --exclude "*" --include "*.ts"
+          aws s3 sync out/ "s3://${R2_BUCKET}/${DEST}/" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --no-progress \
+            --content-type "application/vnd.apple.mpegurl" \
+            --cache-control "public, max-age=60" \
+            --exclude "*" --include "*.m3u8"
+          echo "MASTER_URL=${R2_PUBLIC_BASE}/${DEST}/master.m3u8" >> $GITHUB_ENV
+
+      - name: Notify backend (success)
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          BODY=$(jq -cn \
+                  --argjson id "$SUBMODULE_ID" \
+                  --arg url "$MASTER_URL" \
+                  --argjson dur ${{ steps.probe.outputs.duration_sec }} \
+                  --arg run_id "$RUN_ID" \
+                  --arg run_url "$RUN_URL" \
+                  '{submodule_id:$id, status:"completed", master_url:$url, duration_sec:$dur, run_id:$run_id, run_url:$run_url}')
+          TS=$(date +%s)
+          NONCE=$(openssl rand -hex 16)
+          BODY_HASH=$(printf '%s' "$BODY" | openssl dgst -sha256 -hex | awk '{print $2}')
+          SIGNING_INPUT=$(printf '%s\n%s\n%s' "$TS" "$NONCE" "$BODY_HASH")
+          SIG=$(printf '%s' "$SIGNING_INPUT" \
+            | openssl dgst -sha256 -mac HMAC -macopt "key:${TRANSCODE_WEBHOOK_SECRET}" -hex \
+            | awk '{print $2}')
+          curl --fail-with-body -sS -X POST "$CALLBACK_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Transcode-Timestamp: $TS" \
+            -H "X-Transcode-Nonce: $NONCE" \
+            -H "X-Transcode-Signature: sha256=$SIG" \
+            --data "$BODY"
+
+      - name: Notify backend (failure)
+        if: failure()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          # Best-effort failure callback. If Infisical failed before this step,
+          # TRANSCODE_WEBHOOK_SECRET is empty — backend will reject the signature
+          # and the row stays at "uploaded" for the watchdog to retry. That's fine.
+          if [ -z "${TRANSCODE_WEBHOOK_SECRET:-}" ]; then
+            echo "no webhook secret available; skipping failure callback"
+            exit 0
+          fi
+          BODY=$(jq -cn \
+                  --argjson id "$SUBMODULE_ID" \
+                  --arg err "transcode workflow failed: see $RUN_URL" \
+                  --arg run_id "$RUN_ID" \
+                  --arg run_url "$RUN_URL" \
+                  '{submodule_id:$id, status:"failed", error:$err, run_id:$run_id, run_url:$run_url}')
+          TS=$(date +%s)
+          NONCE=$(openssl rand -hex 16)
+          BODY_HASH=$(printf '%s' "$BODY" | openssl dgst -sha256 -hex | awk '{print $2}')
+          SIGNING_INPUT=$(printf '%s\n%s\n%s' "$TS" "$NONCE" "$BODY_HASH")
+          SIG=$(printf '%s' "$SIGNING_INPUT" \
+            | openssl dgst -sha256 -mac HMAC -macopt "key:${TRANSCODE_WEBHOOK_SECRET}" -hex \
+            | awk '{print $2}')
+          curl -sS -X POST "$CALLBACK_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Transcode-Timestamp: $TS" \
+            -H "X-Transcode-Nonce: $NONCE" \
+            -H "X-Transcode-Signature: sha256=$SIG" \
+            --data "$BODY" || true
