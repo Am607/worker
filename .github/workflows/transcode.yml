@@ -103,11 +103,18 @@ jobs:
 
       - name: Configure AWS CLI for R2
         run: |
-          mkdir -p ~/.aws
-          # No credential file — env vars from Infisical already cover it.
-          # Just pin region (R2 uses "auto").
-          echo "AWS_DEFAULT_REGION=auto" >> $GITHUB_ENV
-          echo "AWS_REGION=auto"         >> $GITHUB_ENV
+          set -euo pipefail
+          : "${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID missing — Infisical fetch failed}"
+          : "${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY missing — Infisical fetch failed}"
+          # Map R2_* -> AWS_* for aws CLI. Mask explicitly (Infisical already masks, belt+braces).
+          echo "::add-mask::$R2_ACCESS_KEY_ID"
+          echo "::add-mask::$R2_SECRET_ACCESS_KEY"
+          {
+            echo "AWS_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID"
+            echo "AWS_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY"
+            echo "AWS_DEFAULT_REGION=auto"
+            echo "AWS_REGION=auto"
+          } >> "$GITHUB_ENV"
 
       - name: Download raw video from R2
         run: |
