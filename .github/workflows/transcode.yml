@@ -139,7 +139,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out/v0 out/v1 out/v2
-          ffmpeg -y -hide_banner -i work/input \
+          # Source may have no audio track. Substitute a silent stereo track so
+          # the HLS ladder still has audio renditions (required by var_stream_map).
+          HAS_AUDIO=$(ffprobe -v error -select_streams a -show_entries stream=index \
+            -of csv=p=0 work/input | head -n1)
+          if [ -n "$HAS_AUDIO" ]; then
+            AUDIO_INPUT_ARGS=()
+            AUDIO_MAP="0:a:0"
+            SHORTEST_ARGS=()
+          else
+            AUDIO_INPUT_ARGS=(-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000")
+            AUDIO_MAP="1:a:0"
+            SHORTEST_ARGS=(-shortest)
+          fi
+          ffmpeg -y -hide_banner -i work/input "${AUDIO_INPUT_ARGS[@]}" \
             -filter_complex "[0:v]split=3[v1][v2][v3]; \
               [v1]scale=w=640:h=360:force_original_aspect_ratio=decrease:force_divisible_by=2[v1out]; \
               [v2]scale=w=1280:h=720:force_original_aspect_ratio=decrease:force_divisible_by=2[v2out]; \
@@ -150,9 +163,10 @@ jobs:
               -b:v:1 2800k -maxrate:v:1 2996k -bufsize:v:1 4200k -g 48 -keyint_min 48 -sc_threshold 0 \
             -map "[v3out]" -c:v:2 libx264 -preset veryfast -profile:v high \
               -b:v:2 5000k -maxrate:v:2 5350k -bufsize:v:2 7500k -g 48 -keyint_min 48 -sc_threshold 0 \
-            -map a:0? -c:a:0 aac -b:a:0 96k  -ac 2 \
-            -map a:0? -c:a:1 aac -b:a:1 128k -ac 2 \
-            -map a:0? -c:a:2 aac -b:a:2 192k -ac 2 \
+            -map "$AUDIO_MAP" -c:a:0 aac -b:a:0 96k  -ac 2 \
+            -map "$AUDIO_MAP" -c:a:1 aac -b:a:1 128k -ac 2 \
+            -map "$AUDIO_MAP" -c:a:2 aac -b:a:2 192k -ac 2 \
+            "${SHORTEST_ARGS[@]}" \
             -f hls -hls_time 6 -hls_playlist_type vod -hls_flags independent_segments \
             -hls_segment_filename "out/v%v/seg_%03d.ts" \
             -master_pl_name master.m3u8 \
