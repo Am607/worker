@@ -1,47 +1,46 @@
-name: Reusable iOS TestFlight Deploy
+name: iOS TestFlight Deploy
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
+      caller_repo:
+        description: "Private repo to checkout (owner/repo)"
+        required: true
+        type: string
+      caller_ref:
+        description: "Branch/ref to checkout from the private repo"
+        required: true
+        type: string
       infisical_project_slug:
         description: "Infisical project slug"
         required: true
         type: string
-
+        default: "soai"
       infisical_env_slug:
         description: "Infisical environment slug"
         required: true
         type: string
-
+        default: "prod"
       infisical_secret_path:
         description: "Infisical secret path"
         required: true
         type: string
-
+        default: "/flutter"
       flutter_channel:
         description: "Flutter channel"
         required: false
-        default: "stable"
         type: string
-
+        default: "stable"
       ruby_version:
         description: "Ruby version"
         required: false
-        default: "3.2"
         type: string
-
+        default: "3.2"
       bundler_version:
         description: "Bundler version"
         required: false
-        default: "4.0.11"
         type: string
-
-    secrets:
-      INFISICAL_CLIENT_ID:
-        required: true
-
-      INFISICAL_CLIENT_SECRET:
-        required: true
+        default: "4.0.11"
 
 jobs:
   deploy:
@@ -55,11 +54,15 @@ jobs:
       BUNDLE_PATH: ${{ github.workspace }}/ios/vendor/bundle
 
     steps:
-      # Because this reusable workflow is called by the private repository,
-      # actions/checkout checks out the private caller repository.
-      - name: Checkout caller repository
+      # This workflow is triggered (not called) from the private repo,
+      # so we must explicitly checkout the private repo's code using a PAT
+      # that has read access to it.
+      - name: Checkout private caller repository
         uses: actions/checkout@v4
         with:
+          repository: ${{ inputs.caller_repo }}
+          ref: ${{ inputs.caller_ref }}
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
           fetch-depth: 0
 
       - name: Fetch secrets from Infisical
