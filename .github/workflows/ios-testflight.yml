@@ -11,53 +11,18 @@ on:
         description: "Branch/ref to checkout from the private repo"
         required: true
         type: string
-      infisical_project_slug:
-        description: "Infisical project slug"
-        required: true
-        type: string
-        default: "soai"
-      infisical_env_slug:
-        description: "Infisical environment slug"
-        required: true
-        type: string
-        default: "prod"
-      infisical_secret_path:
-        description: "Infisical secret path"
-        required: true
-        type: string
-        default: "/flutter"
-      flutter_channel:
-        description: "Flutter channel"
-        required: false
-        type: string
-        default: "stable"
-      ruby_version:
-        description: "Ruby version"
-        required: false
-        type: string
-        default: "3.2"
-      bundler_version:
-        description: "Bundler version"
-        required: false
-        type: string
-        default: "4.0.11"
 
 jobs:
   deploy:
-    runs-on: macos-26
+    runs-on: macos-26          # was macos-15 — needed for Xcode 26 / iOS 26 SDK
     timeout-minutes: 60
-
     env:
       BUNDLE_FORCE_RUBY_PLATFORM: "true"
-      BUNDLER_VERSION: ${{ inputs.bundler_version }}
+      BUNDLER_VERSION: "4.0.11"
       BUNDLE_GEMFILE: ${{ github.workspace }}/ios/Gemfile
       BUNDLE_PATH: ${{ github.workspace }}/ios/vendor/bundle
-
     steps:
-      # This workflow is triggered (not called) from the private repo,
-      # so we must explicitly checkout the private repo's code using a PAT
-      # that has read access to it.
-      - name: Checkout private caller repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.caller_repo }}
@@ -65,21 +30,24 @@ jobs:
           token: ${{ secrets.FLUTTER_PRIVATE_REPO_PAT }}
           fetch-depth: 0
 
+      # TODO: fill in project-id, env-slug and secret-path for this repo's Infisical project.
+      # INFISICAL_CLIENT_ID / INFISICAL_CLIENT_SECRET are the only 2 raw GitHub secrets needed;
+      # everything else is pulled from Infisical at runtime.
       - name: Fetch secrets from Infisical
         uses: Infisical/secrets-action@v1.0.9
         with:
           client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
           client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           domain: https://app.infisical.com
-          project-slug: ${{ inputs.infisical_project_slug }}
-          env-slug: ${{ inputs.infisical_env_slug }}
-          secret-path: ${{ inputs.infisical_secret_path }}
+          project-slug: "soai"
+          env-slug: "prod"
+          secret-path: "/flutter"
           export-type: env
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: ${{ inputs.flutter_channel }}
+          channel: stable
           cache: true
 
       - name: Flutter pub get
@@ -88,196 +56,126 @@ jobs:
       - name: Activate flutterfire_cli
         run: dart pub global activate flutterfire_cli
 
+
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: ${{ inputs.ruby_version }}
+          ruby-version: "3.2"
 
       - name: Restore Ruby gem cache
         uses: actions/cache@v4
         with:
           path: ios/vendor/bundle
-          key: ${{ runner.os }}-${{ runner.arch }}-ruby-${{ inputs.ruby_version }}-bundler-${{ inputs.bundler_version }}-gems-${{ hashFiles('ios/Gemfile.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ruby-3.2-gems-${{ hashFiles('ios/Gemfile.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-ruby-${{ inputs.ruby_version }}-bundler-${{ inputs.bundler_version }}-gems-
+            ${{ runner.os }}-${{ runner.arch }}-ruby-3.2-gems-
 
       - name: Install exact Bundler version
-        run: gem install bundler -v "$BUNDLER_VERSION" --no-document
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/ios/Gemfile
+          BUNDLE_PATH: ${{ github.workspace }}/ios/vendor/bundle
+          BUNDLE_FORCE_RUBY_PLATFORM: "true"
+        run: gem install bundler -v "${{ env.BUNDLER_VERSION }}" --no-document
 
       - name: Configure bundle path
         working-directory: ios
-        run: bundle _${BUNDLER_VERSION}_ config set --local path vendor/bundle
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/ios/Gemfile
+          BUNDLE_PATH: ${{ github.workspace }}/ios/vendor/bundle
+          BUNDLE_FORCE_RUBY_PLATFORM: "true"
+        run: bundle _${{ env.BUNDLER_VERSION }}_ config set --local path vendor/bundle
 
       - name: Bundle install
         working-directory: ios
-        run: bundle _${BUNDLER_VERSION}_ install --jobs 4 --retry 3
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/ios/Gemfile
+          BUNDLE_PATH: ${{ github.workspace }}/ios/vendor/bundle
+          BUNDLE_FORCE_RUBY_PLATFORM: "true"
+        run: bundle _${{ env.BUNDLER_VERSION }}_ install --jobs 4 --retry 3
 
       - name: Bundle check
         working-directory: ios
-        run: bundle _${BUNDLER_VERSION}_ check
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/ios/Gemfile
+          BUNDLE_PATH: ${{ github.workspace }}/ios/vendor/bundle
+          BUNDLE_FORCE_RUBY_PLATFORM: "true"
+        run: bundle _${{ env.BUNDLER_VERSION }}_ check
+
+      - name: Show installed Xcode versions
+        run: ls /Applications | grep Xcode
 
       - name: Select latest Xcode 26
-        shell: bash
         run: |
-          set -euo pipefail
-
-          XCODE_PATH="$(
-            find /Applications \
-              -maxdepth 1 \
-              -type d \
-              -name 'Xcode_26*.app' \
-              -print |
-            sort -V |
-            tail -n 1
-          )"
-
-          if [ -z "$XCODE_PATH" ]; then
-            echo "::error::No Xcode 26 installation found."
-            exit 1
-          fi
-
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)
           echo "Selecting $XCODE_PATH"
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          sudo xcode-select -s "$XCODE_PATH"
+          xcodebuild -version
+
+      - name: Show build tool versions
+        run: |
+          flutter --version
           xcodebuild -version
           swift --version
 
       - name: Pod install
         working-directory: ios
-        run: bundle _${BUNDLER_VERSION}_ exec pod install
+        run: pod install
 
       - name: Set build number and build iOS
-        shell: bash
         run: |
-          set -euo pipefail
-
-          VERSION_NAME="$(
-            awk '/^version:/ {print $2}' pubspec.yaml |
-            cut -d'+' -f1
-          )"
-
-          BUILD_NUMBER="$(git rev-list --count HEAD)"
-
-          echo "Version: $VERSION_NAME"
-          echo "Build number: $BUILD_NUMBER"
-
-          flutter build ios \
-            --release \
-            --no-codesign \
-            --build-name="$VERSION_NAME" \
-            --build-number="$BUILD_NUMBER"
+          VERSION_NAME=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
+          BUILD_NUMBER=$(git rev-list --count HEAD)
+          flutter build ios --release --no-codesign --build-name="$VERSION_NAME" --build-number="$BUILD_NUMBER"
 
       - name: Decode signing assets
-        shell: bash
+        working-directory: ios
         run: |
-          set -euo pipefail
-
           CERT_PATH="$RUNNER_TEMP/distribution.p12"
           PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
           KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
 
-          printf '%s' "$BUILD_CERTIFICATE_BASE64" |
-            base64 --decode -o "$CERT_PATH"
-
-          printf '%s' "$BUILD_PROVISION_PROFILE_BASE64" |
-            base64 --decode -o "$PROFILE_PATH"
-
-          printf '%s' "$ASC_KEY_CONTENT_BASE64" |
-            base64 --decode -o "$KEY_PATH"
-
-          test -s "$CERT_PATH"
-          test -s "$PROFILE_PATH"
-          test -s "$KEY_PATH"
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o "$PROFILE_PATH"
+          echo -n "$ASC_KEY_CONTENT_BASE64" | base64 --decode -o "$KEY_PATH"
 
           echo "CERT_PATH=$CERT_PATH" >> "$GITHUB_ENV"
           echo "PROFILE_PATH=$PROFILE_PATH" >> "$GITHUB_ENV"
           echo "ASC_KEY_FILEPATH=$KEY_PATH" >> "$GITHUB_ENV"
 
-      - name: Validate App Store Connect API key
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          grep -q '^-----BEGIN PRIVATE KEY-----$' "$ASC_KEY_FILEPATH"
-          grep -q '^-----END PRIVATE KEY-----$' "$ASC_KEY_FILEPATH"
-
-          echo "App Store Connect API key decoded successfully."
-
       - name: Create temporary keychain and import certificate
-        shell: bash
         run: |
-          set -euo pipefail
-
           KEYCHAIN_PATH="$RUNNER_TEMP/ci-signing.keychain-db"
 
-          security create-keychain \
-            -p "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          security set-keychain-settings \
-            -lut 21600 \
-            "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          security unlock-keychain \
-            -p "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN_PATH"
-
-          security import "$CERT_PATH" \
-            -P "$P12_PASSWORD" \
-            -A \
-            -t cert \
-            -f pkcs12 \
-            -k "$KEYCHAIN_PATH"
-
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s \
-            -k "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN_PATH"
-
-          EXISTING_KEYCHAINS="$(
-            security list-keychains -d user |
-            tr -d '"'
-          )"
-
-          security list-keychains \
-            -d user \
-            -s "$KEYCHAIN_PATH" \
-            $EXISTING_KEYCHAINS
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
 
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
-      - name: Verify signing identity
-        run: security find-identity -v -p codesigning "$KEYCHAIN_PATH"
-
       - name: Install provisioning profile
-        shell: bash
         run: |
-          set -euo pipefail
-
           PROFILES_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PROFILES_DIR"
-
-          PROFILE_UUID="$(
-            security cms -D -i "$PROFILE_PATH" |
-            plutil -extract UUID raw -
-          )"
-
-          cp "$PROFILE_PATH" \
-            "$PROFILES_DIR/$PROFILE_UUID.mobileprovision"
-
-          echo "Installed provisioning profile: $PROFILE_UUID"
+          cp "$PROFILE_PATH" "$PROFILES_DIR/soai-fastlane-github-action.mobileprovision"
 
       - name: Fastlane beta (TestFlight)
         working-directory: ios
         env:
           FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: "60"
           FASTLANE_XCODEBUILD_SETTINGS_RETRIES: "4"
-        run: bundle _${BUNDLER_VERSION}_ exec fastlane beta
+          BUNDLE_GEMFILE: ${{ github.workspace }}/ios/Gemfile
+          BUNDLE_PATH: ${{ github.workspace }}/ios/vendor/bundle
+          BUNDLE_FORCE_RUBY_PLATFORM: "true"
+        run: bundle _${{ env.BUNDLER_VERSION }}_ exec fastlane beta
 
       - name: Delete temporary keychain
         if: always()
-        shell: bash
         run: |
-          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+          if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH"
           fi
