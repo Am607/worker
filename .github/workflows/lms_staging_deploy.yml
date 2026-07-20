@@ -142,11 +142,16 @@ jobs:
               sleep 2
             done
 
+
+            echo "Using image: ${IMAGE}:${SHA}"
+            IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml config | grep image
+            
+
             echo "== running database migration =="
-            LMS_IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml run --rm api make migrate-up
+            IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml run --rm api make migrate-up
 
             echo "== replacing api container (zero downtime) =="
-            LMS_IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml up -d --no-deps --wait api
+            IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml up -d --no-deps --wait api
 
             echo "== health check =="
             HEALTHY=0
@@ -161,7 +166,7 @@ jobs:
             if [ "$HEALTHY" -ne 1 ]; then
               echo "health check failed, rolling back"
               if [ -n "$PREVIOUS_IMAGE" ]; then
-                LMS_IMAGE="$PREVIOUS_IMAGE" docker compose -f docker-compose.staging.yml up -d --no-deps --wait api
+                IMAGE="$PREVIOUS_IMAGE" docker compose -f docker-compose.staging.yml up -d --no-deps --wait api
               fi
               echo "== docker image cleanup =="
               docker image prune -f
