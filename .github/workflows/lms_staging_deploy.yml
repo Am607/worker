@@ -131,12 +131,12 @@ jobs:
             PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' lms_go_api 2>/dev/null || echo "")
             echo "$PREVIOUS_IMAGE" > /opt/lms_go/.last_image
 
-            echo "== starting postgres and redis =="
-            docker compose -f docker-compose.staging.yml up -d postgres redis
+            echo "== starting postgres =="
+            docker compose -f docker-compose.staging.yml up -d db
 
             echo "== waiting for database to become healthy =="
             for i in $(seq 1 30); do
-              status=$(docker inspect --format='{{.State.Health.Status}}' lms_go_postgres 2>/dev/null || echo "starting")
+              status=$(docker inspect --format='{{.State.Health.Status}}' lms_go-db-1 2>/dev/null || echo "starting")
               [ "$status" = "healthy" ] && break
               [ "$i" -eq 30 ] && { echo "database did not become healthy in time"; exit 1; }
               sleep 2
