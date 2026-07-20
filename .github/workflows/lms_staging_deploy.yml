@@ -102,7 +102,7 @@ jobs:
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: ${{ secrets.ORACLE_SSH_PORT || 22 }}
-          envs: IMAGE,SHA
+          envs: IMAGE,SHA,INFISICAL_CLIENT_ID,INFISICAL_CLIENT_SECRET,LMS_INFISICAL_PROJECT_ID,INFISICAL_ENV_SLUG,GHCR_USER,GHCR_PAT
           script: |
             set -euo pipefail
             cd /opt/lms_go
