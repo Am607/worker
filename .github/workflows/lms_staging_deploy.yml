@@ -119,10 +119,8 @@ jobs:
               --env="${INFISICAL_ENV_SLUG}" \
               --path="/lms_go" \
               --format=dotenv --token="${INFISICAL_TOKEN}" > .env
-            set -a
-            . ./.env
-            set +a
             
+
             rm -f /tmp/infisical_token
 
             echo "== logging into ghcr =="
@@ -156,7 +154,7 @@ jobs:
             echo "========== STEP 2: Migration finished =========="
             
             echo "========== STEP 3: Starting API =========="
-            docker compose -f docker-compose.staging.yml up -d --no-deps api
+            IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml up -d --no-deps api
             echo "========== STEP 4: API started =========="
             
             echo "========== STEP 5: Starting health check =========="
