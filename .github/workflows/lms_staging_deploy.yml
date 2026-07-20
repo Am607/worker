@@ -2,7 +2,7 @@ name: lms-staging-deploy
 
 on:
   repository_dispatch:
-    types: [deploy_staging]
+    types: [lms-deploy-staging]
 
 concurrency:
   group: lms-staging-deploy
