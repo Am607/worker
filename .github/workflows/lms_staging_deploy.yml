@@ -1,1 +1,194 @@
+name: lms-staging-deploy
 
+on:
+  repository_dispatch:
+    types: [deploy_staging]
+
+concurrency:
+  group: lms-staging-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/am607/lms_go
+  PRIVATE_REPO: ${{ github.event.client_payload.repository }}
+  SHA: ${{ github.event.client_payload.sha }}
+  PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+  ENVIRONMENT: staging
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Validate payload
+        run: |
+          set -euo pipefail
+          case "$PRIVATE_REPO" in
+            am607/lms_go) ;;
+            *) echo "unexpected repository: $PRIVATE_REPO"; exit 1 ;;
+          esac
+          case "$SHA" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *) echo "sha must be a full 40-char commit sha, got: $SHA"; exit 1 ;;
+          esac
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*) echo "invalid pr_number: $PR_NUMBER"; exit 1 ;;
+          esac
+
+      - name: Checkout private repo at commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          ref: ${{ env.SHA }}
+          token: ${{ secrets.LMS_PRIVATE_REPO_PAT }}
+          fetch-depth: 1
+
+      - name: Verify checked-out commit matches dispatched SHA
+        run: |
+          set -euo pipefail
+          actual=$(git rev-parse HEAD)
+          [ "$actual" = "$SHA" ] || { echo "checked out $actual, expected $SHA"; exit 1; }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.SHA }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Copy docker-compose.staging.yml to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: ${{ secrets.ORACLE_SSH_PORT || 22 }}
+          source: "docker-compose.staging.yml"
+          target: "/opt/lms_go"
+          strip_components: 0
+
+      - name: Deploy to Oracle VPS
+        id: deploy
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: ${{ secrets.ORACLE_SSH_PORT || 22 }}
+          envs: IMAGE,SHA
+          script: |
+            set -euo pipefail
+            cd /opt/lms_go
+
+            echo "== authenticating with Infisical =="
+            curl -fsSL https://raw.githubusercontent.com/Infisical/infisical/main/install.sh | sudo bash >/dev/null 2>&1 || true
+            infisical login --method=universal-auth \
+              --client-id="${INFISICAL_CLIENT_ID}" \
+              --client-secret="${INFISICAL_CLIENT_SECRET}" --silent --plain > /tmp/infisical_token
+            export INFISICAL_TOKEN=$(cat /tmp/infisical_token)
+
+            echo "== generating fresh .env =="
+            infisical export \
+              --projectId="${LMS_INFISICAL_PROJECT_ID}" \
+              --env="${INFISICAL_ENV_SLUG}" \
+              --path="/lms_go" \
+              --format=dotenv --token="${INFISICAL_TOKEN}" > .env
+            rm -f /tmp/infisical_token
+
+            echo "== logging into ghcr =="
+            echo "${GHCR_PAT}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+
+            echo "== pulling new image =="
+            docker pull "${IMAGE}:${SHA}"
+
+            echo "== saving current image for rollback =="
+            PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' lms_go_api 2>/dev/null || echo "")
+            echo "$PREVIOUS_IMAGE" > /opt/lms_go/.last_image
+
+            echo "== starting postgres and redis =="
+            docker compose -f docker-compose.staging.yml up -d postgres redis
+
+            echo "== waiting for database to become healthy =="
+            for i in $(seq 1 30); do
+              status=$(docker inspect --format='{{.State.Health.Status}}' lms_go_postgres 2>/dev/null || echo "starting")
+              [ "$status" = "healthy" ] && break
+              [ "$i" -eq 30 ] && { echo "database did not become healthy in time"; exit 1; }
+              sleep 2
+            done
+
+            echo "== running database migration =="
+            LMS_IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml run --rm api make migrate-up
+
+            echo "== replacing api container (zero downtime) =="
+            LMS_IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml up -d --no-deps --wait api
+
+            echo "== health check =="
+            HEALTHY=0
+            for i in $(seq 1 15); do
+              if curl -fsS "http://localhost:8080/api/v1/health" >/dev/null 2>&1; then
+                HEALTHY=1
+                break
+              fi
+              sleep 2
+            done
+
+            if [ "$HEALTHY" -ne 1 ]; then
+              echo "health check failed, rolling back"
+              if [ -n "$PREVIOUS_IMAGE" ]; then
+                LMS_IMAGE="$PREVIOUS_IMAGE" docker compose -f docker-compose.staging.yml up -d --no-deps --wait api
+              fi
+              echo "== docker image cleanup =="
+              docker image prune -f
+              exit 1
+            fi
+
+            echo "== docker image cleanup =="
+            docker image prune -f
+            echo "deploy succeeded"
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          SHA: ${{ env.SHA }}
+          INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
+          INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          LMS_INFISICAL_PROJECT_SLUG: ${{ secrets.LMS_INFISICAL_PROJECT_SLUG }}
+          INFISICAL_ENV_SLUG: staging
+          GHCR_USER: ${{ github.actor }}
+          GHCR_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment deployment status on PR (success)
+        if: success()
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST \
+            -H "Authorization: token ${{ secrets.LMS_PRIVATE_REPO_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
+            -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+                '{body: ("✅ Staging deploy succeeded for `" + $sha + "`\n\n" + $run)}')"
+
+      - name: Comment deployment status on PR (failure)
+        if: failure()
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST \
+            -H "Authorization: token ${{ secrets.LMS_PRIVATE_REPO_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
+            -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+                '{body: ("❌ Staging deploy failed for `" + $sha + "` (rolled back if a previous image existed)\n\n" + $run)}')"
