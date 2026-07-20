@@ -13,7 +13,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE: ghcr.io/am607/lms_go
+  IMAGE: ghcr.io/Am607/lms_go
   PRIVATE_REPO: ${{ github.event.client_payload.repository }}
   SHA: ${{ github.event.client_payload.sha }}
   PR_NUMBER: ${{ github.event.client_payload.pr_number }}
@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$PRIVATE_REPO" in
-            am607/lms_go) ;;
+            Am607/lms_go) ;;
             *) echo "unexpected repository: $PRIVATE_REPO"; exit 1 ;;
           esac
           case "$SHA" in
