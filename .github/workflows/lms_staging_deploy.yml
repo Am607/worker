@@ -72,6 +72,17 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+          
+      - name: Debug workspace
+        run: |
+          echo "Current directory:"
+          pwd
+          echo "Repository root:"
+          ls -lah
+          echo "Looking for compose files..."
+          find . -type f | grep docker-compose || true
+          
+
       - name: Copy docker-compose.staging.yml to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
