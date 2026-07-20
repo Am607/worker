@@ -108,7 +108,6 @@ jobs:
             cd /opt/lms_go
 
             echo "== authenticating with Infisical =="
-            curl -fsSL https://raw.githubusercontent.com/Infisical/infisical/main/install.sh | sudo bash >/dev/null 2>&1 || true
             infisical login --method=universal-auth \
               --client-id="${INFISICAL_CLIENT_ID}" \
               --client-secret="${INFISICAL_CLIENT_SECRET}" --silent --plain > /tmp/infisical_token
