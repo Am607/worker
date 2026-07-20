@@ -119,6 +119,10 @@ jobs:
               --env="${INFISICAL_ENV_SLUG}" \
               --path="/lms_go" \
               --format=dotenv --token="${INFISICAL_TOKEN}" > .env
+            set -a
+            . ./.env
+            set +a
+            
             rm -f /tmp/infisical_token
 
             echo "== logging into ghcr =="
