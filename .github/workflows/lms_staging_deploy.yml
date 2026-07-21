@@ -20,9 +20,9 @@ env:
   ENVIRONMENT: staging
 
 jobs:
-  deploy:
+  validate-payload:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     steps:
       - name: Validate payload
         run: |
@@ -39,6 +39,11 @@ jobs:
             ''|*[!0-9]*) echo "invalid pr_number: $PR_NUMBER"; exit 1 ;;
           esac
 
+  build-and-push-image:
+    needs: validate-payload
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
       - name: Checkout private repo at commit
         uses: actions/checkout@v4
         with:
@@ -72,16 +77,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-          
-      - name: Debug workspace
-        run: |
-          echo "Current directory:"
-          pwd
-          echo "Repository root:"
-          ls -lah
-          echo "Looking for compose files..."
-          find . -type f | grep docker-compose || true
-          
+  ship-compose-file:
+    needs: build-and-push-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout private repo at commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          ref: ${{ env.SHA }}
+          token: ${{ secrets.LMS_PRIVATE_REPO_PAT }}
+          fetch-depth: 1
 
       - name: Copy docker-compose.staging.yml to VPS
         uses: appleboy/scp-action@v0.1.7
@@ -94,6 +101,11 @@ jobs:
           target: "/opt/lms_go"
           strip_components: 0
 
+  deploy-to-vps:
+    needs: ship-compose-file
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
       - name: Deploy to Oracle VPS
         id: deploy
         uses: appleboy/ssh-action@v1
@@ -119,7 +131,7 @@ jobs:
               --env="${INFISICAL_ENV_SLUG}" \
               --path="/lms_go" \
               --format=dotenv --token="${INFISICAL_TOKEN}" > .env
-            
+
 
             rm -f /tmp/infisical_token
 
@@ -147,31 +159,31 @@ jobs:
 
             echo "Using image: ${IMAGE}:${SHA}"
             IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml config | grep image
-            
+
 
             echo "========== STEP 1: Starting migration =========="
             make migrate-up
             echo "========== STEP 2: Migration finished =========="
-            
+
             echo "========== STEP 3: Starting API =========="
             IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml up -d --no-deps api
             echo "========== STEP 4: API started =========="
-            
+
             echo "========== STEP 5: Starting health check =========="
             HEALTHY=0
-            
+
             for i in $(seq 1 30); do
               echo "Health check attempt $i"
-            
+
               if curl -fsS http://localhost:8080/api/v1/health >/dev/null; then
                 echo "Health check passed"
                 HEALTHY=1
                 break
               fi
-            
+
               sleep 2
             done
-            
+
             echo "========== STEP 6: Health check finished =========="
 
             if [ "$HEALTHY" -ne 1 ]; then
@@ -197,19 +209,25 @@ jobs:
           GHCR_USER: ${{ github.actor }}
           GHCR_PAT: ${{ secrets.GITHUB_TOKEN }}
 
+  notify-pr:
+    needs: deploy-to-vps
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
       - name: Comment deployment status on PR (success)
-        if: success()
+        if: needs.deploy-to-vps.result == 'success'
         run: |
           set -euo pipefail
-          curl -i -X POST \
-          -H "Authorization: Bearer ${{ secrets.LMS_PRIVATE_REPO_PAT }}" \
-          -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
-          -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-              '{body: ("✅ Staging deploy succeeded for `" + $sha + "`\n\n" + $run)}')"
+          curl -fsS -X POST \
+            -H "Authorization: token ${{ secrets.LMS_PRIVATE_REPO_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
+            -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+                '{body: ("✅ Staging deploy succeeded for `" + $sha + "`\n\n" + $run)}')"
 
       - name: Comment deployment status on PR (failure)
-        if: failure()
+        if: needs.deploy-to-vps.result != 'success'
         run: |
           set -euo pipefail
           curl -fsS -X POST \
