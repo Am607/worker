@@ -2,7 +2,7 @@ name: lms-staging-deploy
 
 on:
   repository_dispatch:
-    types: [deploy_staging]
+    types: [lms-deploy-staging]
 
 concurrency:
   group: lms-staging-deploy
@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$PRIVATE_REPO" in
-            am607/lms_go) ;;
+            Am607/lms_go) ;;
             *) echo "unexpected repository: $PRIVATE_REPO"; exit 1 ;;
           esac
           case "$SHA" in
@@ -91,13 +91,12 @@ jobs:
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: ${{ secrets.ORACLE_SSH_PORT || 22 }}
-          envs: IMAGE,SHA
+          envs: IMAGE,SHA,INFISICAL_CLIENT_ID,INFISICAL_CLIENT_SECRET,LMS_INFISICAL_PROJECT_ID,INFISICAL_ENV_SLUG,GHCR_USER,GHCR_PAT
           script: |
             set -euo pipefail
             cd /opt/lms_go
 
             echo "== authenticating with Infisical =="
-            curl -fsSL https://raw.githubusercontent.com/Infisical/infisical/main/install.sh | sudo bash >/dev/null 2>&1 || true
             infisical login --method=universal-auth \
               --client-id="${INFISICAL_CLIENT_ID}" \
               --client-secret="${INFISICAL_CLIENT_SECRET}" --silent --plain > /tmp/infisical_token
@@ -109,6 +108,8 @@ jobs:
               --env="${INFISICAL_ENV_SLUG}" \
               --path="/lms_go" \
               --format=dotenv --token="${INFISICAL_TOKEN}" > .env
+            
+
             rm -f /tmp/infisical_token
 
             echo "== logging into ghcr =="
@@ -121,37 +122,51 @@ jobs:
             PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' lms_go_api 2>/dev/null || echo "")
             echo "$PREVIOUS_IMAGE" > /opt/lms_go/.last_image
 
-            echo "== starting postgres and redis =="
-            docker compose -f docker-compose.staging.yml up -d postgres redis
+            echo "== starting postgres =="
+            docker compose -f docker-compose.staging.yml up -d db
 
             echo "== waiting for database to become healthy =="
             for i in $(seq 1 30); do
-              status=$(docker inspect --format='{{.State.Health.Status}}' lms_go_postgres 2>/dev/null || echo "starting")
+              status=$(docker inspect --format='{{.State.Health.Status}}' lms_go-db-1 2>/dev/null || echo "starting")
               [ "$status" = "healthy" ] && break
               [ "$i" -eq 30 ] && { echo "database did not become healthy in time"; exit 1; }
               sleep 2
             done
 
-            echo "== running database migration =="
-            LMS_IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml run --rm api make migrate-up
 
-            echo "== replacing api container (zero downtime) =="
-            LMS_IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml up -d --no-deps --wait api
+            echo "Using image: ${IMAGE}:${SHA}"
+            IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml config | grep image
+            
 
-            echo "== health check =="
+            echo "========== STEP 1: Starting migration =========="
+            make migrate-up
+            echo "========== STEP 2: Migration finished =========="
+            
+            echo "========== STEP 3: Starting API =========="
+            IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.staging.yml up -d --no-deps api
+            echo "========== STEP 4: API started =========="
+            
+            echo "========== STEP 5: Starting health check =========="
             HEALTHY=0
-            for i in $(seq 1 15); do
-              if curl -fsS "http://localhost:8080/api/v1/health" >/dev/null 2>&1; then
+            
+            for i in $(seq 1 30); do
+              echo "Health check attempt $i"
+            
+              if curl -fsS http://localhost:8080/api/v1/health >/dev/null; then
+                echo "Health check passed"
                 HEALTHY=1
                 break
               fi
+            
               sleep 2
             done
+            
+            echo "========== STEP 6: Health check finished =========="
 
             if [ "$HEALTHY" -ne 1 ]; then
               echo "health check failed, rolling back"
               if [ -n "$PREVIOUS_IMAGE" ]; then
-                LMS_IMAGE="$PREVIOUS_IMAGE" docker compose -f docker-compose.staging.yml up -d --no-deps --wait api
+                IMAGE="$PREVIOUS_IMAGE" docker compose -f docker-compose.staging.yml up -d --no-deps --wait api
               fi
               echo "== docker image cleanup =="
               docker image prune -f
@@ -166,7 +181,7 @@ jobs:
           SHA: ${{ env.SHA }}
           INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
           INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
-          LMS_INFISICAL_PROJECT_SLUG: ${{ secrets.LMS_INFISICAL_PROJECT_SLUG }}
+          LMS_INFISICAL_PROJECT_ID: ${{ secrets.LMS_INFISICAL_PROJECT_ID }}
           INFISICAL_ENV_SLUG: staging
           GHCR_USER: ${{ github.actor }}
           GHCR_PAT: ${{ secrets.GITHUB_TOKEN }}
