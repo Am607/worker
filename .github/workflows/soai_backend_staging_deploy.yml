@@ -48,7 +48,7 @@ jobs:
           client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
           client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           project-slug: ${{ vars.SOAI_INFISICAL_PROJECT_SLUG }}
-          env-slug: staging
+          env-slug: Staging
           secret-path: /backend
           export-type: env
 
