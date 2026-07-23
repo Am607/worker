@@ -136,28 +136,43 @@ jobs:
             docker image prune -f
 
   notify-pr:
+    name: Comment deployment status on PR
     needs: deploy
-    if: always()
+    if: |
+      always() &&
+      github.event.client_payload.pr_number != null
     runs-on: ubuntu-latest
+  
+    env:
+      PRIVATE_REPO: ${{ github.event.client_payload.repository }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      SHA: ${{ github.event.client_payload.sha }}
+  
     steps:
       - name: Comment deployment status on PR (success)
         if: needs.deploy.result == 'success'
         run: |
           set -euo pipefail
+  
           curl -fsS -X POST \
             -H "Authorization: token ${{ secrets.SOAI_PRIVATE_REPO_PAT }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/github.event.client_payload.repository/issues/${PR_NUMBER}/comments" \
-            -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-                '{body: ("Production deploy succeeded for `" + $sha + "`\n\n" + $run)}')"
-
+            "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
+            -d "$(jq -cn \
+              --arg sha "$SHA" \
+              --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              '{body:("✅ Production deployment succeeded for `" + $sha + "`\n\nWorkflow: " + $run)}')"
+  
       - name: Comment deployment status on PR (failure)
         if: needs.deploy.result != 'success'
         run: |
           set -euo pipefail
+  
           curl -fsS -X POST \
             -H "Authorization: token ${{ secrets.SOAI_PRIVATE_REPO_PAT }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/github.event.client_payload.repository/issues/${PR_NUMBER}/comments" \
-            -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-                '{body: ("Production deploy failed. Run logs: " + $run)}')"
+            "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
+            -d "$(jq -cn \
+              --arg sha "$SHA" \
+              --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              '{body:("❌ Production deployment failed for `" + $sha + "`\n\nWorkflow: " + $run)}')"
