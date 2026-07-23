@@ -135,10 +135,29 @@ jobs:
             docker compose up -d
             docker image prune -f
 
-      - name: Deploy succeeded
-        if: success()
-        run: echo "::notice::SOAI backend deploy succeeded (commit ${{ github.event.client_payload.sha || github.sha }})"
+  notify-pr:
+    needs: deploy
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment deployment status on PR (success)
+        if: needs.deploy.result == 'success'
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST \
+            -H "Authorization: token ${{ secrets.SOAI_PRIVATE_REPO_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
+            -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+                '{body: ("Production deploy succeeded for `" + $sha + "`\n\n" + $run)}')"
 
-      - name: Deploy failed
-        if: failure()
-        run: echo "::error::SOAI backend deploy failed (commit ${{ github.event.client_payload.sha || github.sha }})"
+      - name: Comment deployment status on PR (failure)
+        if: needs.deploy.result != 'success'
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST \
+            -H "Authorization: token ${{ secrets.SOAI_PRIVATE_REPO_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
+            -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+                '{body: ("Production deploy failed. Run logs: " + $run)}')"
