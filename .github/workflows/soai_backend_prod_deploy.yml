@@ -64,7 +64,7 @@ jobs:
           method: universal
           client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
           client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
-          project-slug: ${{ vars.INFISICAL_PROJECT_SLUG }}
+          project-slug: ${{ vars.SOAI_INFISICAL_PROJECT_SLUG }}
           env-slug: prod
           secret-path: /backend
           export-type: env
