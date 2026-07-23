@@ -161,7 +161,7 @@ jobs:
             -d "$(jq -cn \
               --arg sha "$SHA" \
               --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-              '{body:("✅ Production deployment succeeded for `" + $sha + "`\n\nWorkflow: " + $run)}')"
+              '{body:("✅ Production deployment succeeded")}')"
   
       - name: Comment deployment status on PR (failure)
         if: needs.deploy.result != 'success'
@@ -175,4 +175,4 @@ jobs:
             -d "$(jq -cn \
               --arg sha "$SHA" \
               --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-              '{body:("❌ Production deployment failed for `" + $sha + "`\n\nWorkflow: " + $run)}')"
+              '{body:("❌ Production deployment failed")}')"
