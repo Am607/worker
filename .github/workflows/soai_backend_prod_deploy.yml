@@ -12,8 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.client_payload.repository || github.repository }}
-          ref: ${{ github.event.client_payload.sha || github.ref }}
+          repository: ${{ github.event.client_payload.repository }}
+          ref: ${{ github.event.client_payload.ref }}
           token: ${{ secrets.SOAI_PRIVATE_REPO_PAT }}
 
       - name: Load secrets from Infisical
