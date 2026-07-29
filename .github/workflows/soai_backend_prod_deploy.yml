@@ -42,6 +42,43 @@ jobs:
         run: |
           echo "$DIGITALOCEAN_ACCESS_TOKEN" | docker login registry.digitalocean.com -u "$DIGITALOCEAN_ACCESS_TOKEN" --password-stdin
 
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ env.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Prune old DOCR image tags to reclaim quota
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="soai-backend"
+          REGISTRY="${{ steps.registry.outputs.registry }}"
+          # keep the newest 5 sha tags; each build adds one and old ones
+          # otherwise accumulate forever and eventually blow the DOCR quota
+          KEEP=5
+
+          old_tags=$(doctl registry repository list-tags "$REPO" --output json \
+            | jq -r --argjson keep "$KEEP" \
+              '[.[] | select(.tag != "latest")] | sort_by(.updated_at) | reverse | .[$keep:] | .[].tag')
+
+          if [ -n "$old_tags" ]; then
+            echo "$old_tags" | xargs -r -n1 doctl registry repository delete-tag "$REPO" --force
+          else
+            echo "No old tags to prune."
+          fi
+
+          doctl registry garbage-collection start "$REGISTRY" --include-untagged-manifests --force
+
+          echo "Waiting for garbage collection to finish..."
+          for _ in $(seq 1 60); do
+            status=$(doctl registry garbage-collection list "$REGISTRY" --output json | jq -r '.[0].status // "unknown"')
+            echo "GC status: $status"
+            case "$status" in
+              succeeded|failed|cancelled) break ;;
+            esac
+            sleep 10
+          done
+
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
