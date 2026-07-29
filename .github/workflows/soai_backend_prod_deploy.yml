@@ -57,9 +57,11 @@ jobs:
           # otherwise accumulate forever and eventually blow the DOCR quota
           KEEP=5
 
-          old_tags=$(doctl registry repository list-tags "$REPO" --output json \
-            | jq -r --argjson keep "$KEEP" \
-              '[.[] | select(.tag != "latest")] | sort_by(.updated_at) | reverse | .[$keep:] | .[].tag')
+          old_tags=$(doctl registry repository list-tags "$REPO" --no-header --format Tag,UpdatedAt \
+            | awk '$1 != "latest"' \
+            | sort -k2 -r \
+            | tail -n +"$((KEEP + 1))" \
+            | awk '{print $1}')
 
           if [ -n "$old_tags" ]; then
             echo "$old_tags" | xargs -r -n1 doctl registry repository delete-tag "$REPO" --force
@@ -71,11 +73,9 @@ jobs:
 
           echo "Waiting for garbage collection to finish..."
           for _ in $(seq 1 60); do
-            status=$(doctl registry garbage-collection list "$REGISTRY" --output json | jq -r '.[0].status // "unknown"')
-            echo "GC status: $status"
-            case "$status" in
-              succeeded|failed|cancelled) break ;;
-            esac
+            status=$(doctl registry garbage-collection get-active "$REGISTRY" --no-header --format Status 2>/dev/null || echo "")
+            echo "GC status: ${status:-none}"
+            [ -z "$status" ] && break
             sleep 10
           done
 
