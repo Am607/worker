@@ -162,15 +162,19 @@ jobs:
 
 
             echo "========== STEP 1: Starting migration =========="
+            set -a
+            . ./.env
+            set +a
+            
+            MIGRATION_DB_URL="postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
+            
             docker run --rm \
-            --entrypoint sh \
-            --network host \
-            --env-file .env \
-            "${IMAGE}:${SHA}" \
-            -c 'migrate \
+              --entrypoint migrate \
+              --network host \
+              "${IMAGE}:${SHA}" \
               -path=/app/migrations \
-              -database "postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" \
-              up'
+              -database "$MIGRATION_DB_URL" \
+              up
 
             echo "========== STEP 2: Migration finished =========="
 
