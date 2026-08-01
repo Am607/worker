@@ -162,7 +162,15 @@ jobs:
 
 
             echo "========== STEP 1: Starting migration =========="
-            make migrate-up
+            docker run --rm \
+            --entrypoint migrate \
+            --network host \
+            --env-file .env \
+            "${IMAGE}:${SHA}" \
+            -path=/app/migrations \
+            -database "$DB_URL" \
+            up
+            
             echo "========== STEP 2: Migration finished =========="
 
             echo "========== STEP 3: Starting API =========="
