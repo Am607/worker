@@ -163,14 +163,15 @@ jobs:
 
             echo "========== STEP 1: Starting migration =========="
             docker run --rm \
-            --entrypoint migrate \
+            --entrypoint sh \
             --network host \
             --env-file .env \
             "${IMAGE}:${SHA}" \
-            -path=/app/migrations \
-            -database "$DB_URL" \
-            up
-            
+            -c 'migrate \
+              -path=/app/migrations \
+              -database "postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" \
+              up'
+
             echo "========== STEP 2: Migration finished =========="
 
             echo "========== STEP 3: Starting API =========="
