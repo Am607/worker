@@ -182,18 +182,23 @@ jobs:
 
             # 5. Wait for healthcheck; rollback if it never goes healthy.
             for i in $(seq 1 30); do
-              status="$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q server)" 2>/dev/null || echo starting)"
-              echo "health[$i]: $status"
-              [ "$status" = "healthy" ] && break
-              [ "$status" = "unhealthy" ] && break
-              sleep 2
+                health_status="$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q server)" 2>/dev/null || echo starting)"
+                echo "health[$i]: $health_status"
+            
+                [ "$health_status" = "healthy" ] && break
+                [ "$health_status" = "unhealthy" ] && break
+            
+                sleep 2
             done
-            if [ "$status" != "healthy" ]; then
-              echo "::error::server unhealthy after deploy, rolling back to $PREV_IMAGE"
-              if [ -n "$PREV_IMAGE" ]; then
-                IMAGE="$PREV_IMAGE" docker compose up -d --no-deps server
-              fi
-              exit 1
+            
+            if [ "$health_status" != "healthy" ]; then
+                echo "::error::server unhealthy after deploy, rolling back to $PREV_IMAGE"
+            
+                if [ -n "$PREV_IMAGE" ]; then
+                    IMAGE="$PREV_IMAGE" docker compose up -d --no-deps server
+                fi
+            
+                exit 1
             fi
 
             # 6. Cleanup dangling images, keep volumes.
