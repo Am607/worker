@@ -1,13 +1,22 @@
-# Postgres backup pipeline (droplet -> R2). Runs on its own schedule —
-# no backend trigger needed.
+# Postgres backup pipeline (droplet -> R2).
+#
+# Triggered by soai-backend via the GitHub `repository_dispatch` REST API
+# (same mechanism as soai_django_prod_deploy.yml and transcode.yml), instead
+# of a GitHub Actions cron schedule. Backend decides the cadence (e.g. its
+# own Celery beat / cron) and calls:
+#
+#   POST https://api.github.com/repos/<owner>/worker/dispatches
+#   Authorization: token <PAT with actions:write on this repo>
+#   Accept: application/vnd.github+json
+#   { "event_type": "db_backup" }
+#
+# workflow_dispatch is kept for manual/ad-hoc runs from the Actions UI.
 
 name: db-backup
 
 on:
-  schedule:
-    # 02:00 IST = 20:30 UTC (previous day) and 14:00 IST = 08:30 UTC
-    - cron: "30 20 * * *"
-    - cron: "30 8 * * *"
+  repository_dispatch:
+    types: [db_backup]
   workflow_dispatch: {}
 
 concurrency:
@@ -30,7 +39,7 @@ jobs:
           client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           project-slug: ${{ secrets.SOAI_INFISICAL_PROJECT_SLUG }}
           env-slug: prod
-          secret-path: /backup
+          secret-path: /backend
           export-type: env
 
       - name: Prepare SSH key
