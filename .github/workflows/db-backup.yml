@@ -40,6 +40,7 @@ jobs:
           project-slug: ${{ secrets.SOAI_INFISICAL_PROJECT_SLUG }}
           env-slug: prod
           secret-path: /backend
+          recursive: true
           export-type: env
 
       - name: Prepare SSH key
@@ -70,11 +71,19 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           DROPLET_APP_DIR: ${{ env.DROPLET_APP_DIR }}
+          # Backup-only creds, fetched straight from Infisical above — do NOT
+          # depend on the deploy workflow's droplet .env for these (it's
+          # rendered non-recursively from /backend and won't have them
+          # unless the deploy workflow also opts into subfolder secrets).
+          R2_BACKUP_ACCESS_KEY_ID: ${{ env.R2_BACKUP_ACCESS_KEY_ID }}
+          R2_BACKUP_SECRET_ACCESS_KEY: ${{ env.R2_BACKUP_SECRET_ACCESS_KEY }}
+          R2_BACKUP_BUCKET: ${{ env.R2_BACKUP_BUCKET }}
+          R2_ACCOUNT_ID: ${{ env.R2_ACCOUNT_ID }}
         with:
           host: ${{ steps.ssh.outputs.host }}
           username: ${{ steps.ssh.outputs.username }}
           key_path: ${{ steps.ssh.outputs.key_path }}
-          envs: DROPLET_APP_DIR
+          envs: DROPLET_APP_DIR,R2_BACKUP_ACCESS_KEY_ID,R2_BACKUP_SECRET_ACCESS_KEY,R2_BACKUP_BUCKET,R2_ACCOUNT_ID
           command_timeout: 30m
           script: |
             set -euo pipefail
@@ -82,7 +91,7 @@ jobs:
             cd "$DROPLET_APP_DIR"
 
             # .env rendered by deploy workflow via Infisical. Contains POSTGRES_*
-            # and R2_*.
+            # (db creds must match the running container).
             if [ ! -f .env ]; then
               echo "::error::${DROPLET_APP_DIR}/.env missing; run deploy first"
               exit 1
@@ -93,17 +102,14 @@ jobs:
 
             : "${POSTGRES_DB:?POSTGRES_DB not set}"
             : "${POSTGRES_USER:?POSTGRES_USER not set}"
-            # Scoped creds for backup bucket only (Object R/W, no delete). Do NOT reuse media creds.
+            # Scoped creds for backup bucket only (Object R/W, no delete), passed in
+            # from the job env — not sourced from .env. Do NOT reuse media creds.
             : "${R2_BACKUP_ACCESS_KEY_ID:?R2_BACKUP_ACCESS_KEY_ID not set}"
             : "${R2_BACKUP_SECRET_ACCESS_KEY:?R2_BACKUP_SECRET_ACCESS_KEY not set}"
             # Dedicated backup bucket (private, no public domain). Do NOT reuse media bucket.
             : "${R2_BACKUP_BUCKET:?R2_BACKUP_BUCKET not set}"
-            # R2_ENDPOINT not stored in Infisical; Django derives it from R2_ACCOUNT_ID.
-            # Mirror that fallback here.
-            if [ -z "${R2_ENDPOINT:-}" ]; then
-              : "${R2_ACCOUNT_ID:?R2_ACCOUNT_ID not set (needed to derive R2_ENDPOINT)}"
-              R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-            fi
+            : "${R2_ACCOUNT_ID:?R2_ACCOUNT_ID not set (needed to derive R2_ENDPOINT)}"
+            R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
             TS="$(date -u +%Y%m%dT%H%M%SZ)"
             FILE="edvube-${POSTGRES_DB}-${TS}.dump"
