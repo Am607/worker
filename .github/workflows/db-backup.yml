@@ -1,9 +1,8 @@
 # Postgres backup pipeline (droplet -> R2).
 #
-# Triggered by soai-backend via the GitHub `repository_dispatch` REST API
-# (same mechanism as soai_django_prod_deploy.yml and transcode.yml), instead
-# of a GitHub Actions cron schedule. Backend decides the cadence (e.g. its
-# own Celery beat / cron) and calls:
+# Runs on GH Actions cron, 2x/day (00:00, 12:00 UTC). Also triggerable by
+# soai-backend via the GitHub `repository_dispatch` REST API (same mechanism
+# as soai_django_prod_deploy.yml and transcode.yml):
 #
 #   POST https://api.github.com/repos/<owner>/worker/dispatches
 #   Authorization: token <PAT with actions:write on this repo>
@@ -18,6 +17,9 @@ on:
   repository_dispatch:
     types: [db_backup]
   workflow_dispatch: {}
+  schedule:
+    - cron: "0 0 * * *"
+    - cron: "0 12 * * *"
 
 concurrency:
   group: db-backup
