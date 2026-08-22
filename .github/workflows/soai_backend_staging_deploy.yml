@@ -31,7 +31,7 @@ jobs:
           set -euo pipefail
 
           case "$PRIVATE_REPO" in
-            Am607/soai-backend) ;;
+            Am607/soai-django) ;;
             *)
               echo "Unexpected repository: $PRIVATE_REPO"
               exit 1
