@@ -447,7 +447,7 @@ jobs:
           set -euo pipefail
 
           curl -fsS -X POST \
-            -H "Authorization: token ${{ secrets.SOAI_PRIVATE_REPO_PAT }}" \
+            -H "Authorization: token ${{ secrets.SOAI_BACKEND_REPO_PAT }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
             -d "$(jq -cn \
@@ -461,7 +461,7 @@ jobs:
           set -euo pipefail
 
           curl -fsS -X POST \
-            -H "Authorization: token ${{ secrets.SOAI_PRIVATE_REPO_PAT }}" \
+            -H "Authorization: token ${{ secrets.SOAI_BACKEND_REPO_PAT }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
             -d "$(jq -cn \
