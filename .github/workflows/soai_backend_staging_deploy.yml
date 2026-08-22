@@ -212,10 +212,14 @@ jobs:
             # Make sure compose configuration exists
             # --------------------------------------------------
 
-            test -f docker-compose.yml || {
-              echo "docker-compose.yml not found"
+            test -f docker-compose.staging.yml || {
+              echo "docker-compose.staging.yml not found"
               exit 1
             }
+
+            export COMPOSE_FILE="docker-compose.staging.yml"
+
+            echo "Using Compose files: $COMPOSE_FILE"
 
             # --------------------------------------------------
             # Load Infisical machine credentials
