@@ -1,15 +1,16 @@
-name: soai-backend-staging-deploy
+name: SOAI Django Staging Deploy
 
-on:
+"on":
   repository_dispatch:
     types: [soai-deploy-staging]
 
 concurrency:
-  group: soai-staging-deploy-${{ github.event.client_payload.pr_number }}
+  group: soai-django-staging-${{ github.event.client_payload.pr_number }}
   cancel-in-progress: true
 
 permissions:
   contents: read
+  packages: write
 
 env:
   PRIVATE_REPO: ${{ github.event.client_payload.repository }}
@@ -19,27 +20,100 @@ env:
 
 jobs:
   validate-payload:
+    name: Validate deployment payload
     runs-on: ubuntu-latest
     timeout-minutes: 5
+
     steps:
       - name: Validate payload
+        shell: bash
         run: |
           set -euo pipefail
+
           case "$PRIVATE_REPO" in
             Am607/soai-backend) ;;
-            *) echo "unexpected repository: $PRIVATE_REPO"; exit 1 ;;
-          esac
-          case "$SHA" in
-            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-            *) echo "sha must be a full 40-char commit sha, got: $SHA"; exit 1 ;;
-          esac
-          case "$PR_NUMBER" in
-            ''|*[!0-9]*) echo "invalid pr_number: $PR_NUMBER"; exit 1 ;;
+            *)
+              echo "Unexpected repository: $PRIVATE_REPO"
+              exit 1
+              ;;
           esac
 
-  deploy:
+          case "$SHA" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *)
+              echo "SHA must be a full 40-character commit SHA. Got: $SHA"
+              exit 1
+              ;;
+          esac
+
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "Invalid PR number: $PR_NUMBER"
+              exit 1
+              ;;
+          esac
+
+
+  build-push:
+    name: Build image & push to GHCR
     needs: validate-payload
     runs-on: ubuntu-latest
+
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      base: ${{ steps.meta.outputs.base }}
+      sha: ${{ steps.meta.outputs.sha }}
+
+    steps:
+      - name: Checkout PR commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.repository }}
+          ref: ${{ github.event.client_payload.sha }}
+          token: ${{ secrets.SOAI_PRIVATE_REPO_PAT }}
+
+      - name: Set image tags
+        id: meta
+        shell: bash
+        run: |
+          FULL_SHA="${{ github.event.client_payload.sha }}"
+          SHORT_SHA="${FULL_SHA:0:12}"
+
+          OWNER_LC="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          BASE="ghcr.io/${OWNER_LC}/soai-django"
+
+          echo "image=${BASE}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push staging image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.base }}:${{ steps.meta.outputs.sha }}
+            ${{ steps.meta.outputs.base }}:staging
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+
+  deploy:
+    name: Migrate, swap & healthcheck staging
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment: staging
+
     steps:
       - name: Load secrets from Infisical
         uses: Infisical/secrets-action@v1.0.7
@@ -56,13 +130,15 @@ jobs:
         id: ssh
         shell: bash
         run: |
-          : "${DROPLET_HOST:?missing DROPLET_HOST from Infisical (env=staging)}"
-          : "${DROPLET_USER:?missing DROPLET_USER from Infisical (env=staging)}"
-          : "${DROPLET_SSH_KEY:?missing DROPLET_SSH_KEY from Infisical (env=staging)}"
-          : "${DROPLET_APP_DIR:?missing DROPLET_APP_DIR from Infisical (env=staging)}"
-          : "${SERVICE_NAME:?missing SERVICE_NAME from Infisical (env=staging)}"
+          set -euo pipefail
 
-          key_path="$RUNNER_TEMP/soai_staging_deploy_key"
+          : "${DROPLET_HOST:?missing DROPLET_HOST from Infisical staging}"
+          : "${DROPLET_USER:?missing DROPLET_USER from Infisical staging}"
+          : "${DROPLET_SSH_KEY:?missing DROPLET_SSH_KEY from Infisical staging}"
+          : "${DROPLET_APP_DIR:?missing DROPLET_APP_DIR from Infisical staging}"
+
+          key_path="$RUNNER_TEMP/soai_django_staging_deploy_key"
+
           printf '%b\n' "$DROPLET_SSH_KEY" > "$key_path"
           chmod 600 "$key_path"
 
@@ -77,118 +153,314 @@ jobs:
             echo "key_path=$key_path"
           } >> "$GITHUB_OUTPUT"
 
-      - name: SSH in, checkout PR SHA, build, restart
+      - name: SSH in, migrate, swap server, healthcheck, rollback on failure
         uses: appleboy/ssh-action@v1
         env:
+          IMAGE: ${{ needs.build-push.outputs.image }}
+          IMAGE_BASE: ${{ needs.build-push.outputs.base }}
+
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PAT: ${{ env.GHCR_PAT }}
+
+          DROPLET_APP_DIR: ${{ env.DROPLET_APP_DIR }}
+
           PR_NUMBER: ${{ env.PR_NUMBER }}
-          SHA: ${{ env.SHA }}
           PR_BRANCH: ${{ env.PR_BRANCH }}
+          SHA: ${{ env.SHA }}
+
         with:
           host: ${{ steps.ssh.outputs.host }}
           username: ${{ steps.ssh.outputs.username }}
           key_path: ${{ steps.ssh.outputs.key_path }}
-          envs: DROPLET_APP_DIR,SERVICE_NAME,PR_NUMBER,SHA,PR_BRANCH
+
+          envs: IMAGE,IMAGE_BASE,GHCR_USERNAME,GHCR_PAT,DROPLET_APP_DIR,PR_NUMBER,PR_BRANCH,SHA
+
           command_timeout: 30m
+
           script: |
             set -euo pipefail
+
             : "${DROPLET_APP_DIR:?missing DROPLET_APP_DIR}"
-            : "${SERVICE_NAME:?missing SERVICE_NAME}"
+
             cd "$DROPLET_APP_DIR"
 
+            # --------------------------------------------------
+            # Validate repository
+            # --------------------------------------------------
+
             if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-              echo "DROPLET_APP_DIR must point to a cloned repo. Current value: $DROPLET_APP_DIR"
+              echo "DROPLET_APP_DIR must point to cloned repo."
+              echo "Current value: $DROPLET_APP_DIR"
               ls -la "$DROPLET_APP_DIR"
               exit 1
             fi
 
-            # Fetch the exact PR head ref. `refs/pull/<n>/head` works even
-            # for forks and avoids needing the branch in our remote ns.
-            git fetch --prune origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-${PR_NUMBER}"
-            git checkout --detach "$SHA"
-            echo "Checked out PR #${PR_NUMBER} (${PR_BRANCH}) at ${SHA}"
+            # --------------------------------------------------
+            # Checkout exact PR SHA
+            # --------------------------------------------------
 
-            # Refresh .env from Infisical (staging env). Same bootstrap
-            # layout as prod so the deploy user can read it without any
-            # per-PR setup.
+            git fetch --prune origin \
+              "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-${PR_NUMBER}"
+
+            git checkout --detach "$SHA"
+
+            echo "Checked out PR #${PR_NUMBER}"
+            echo "Branch: ${PR_BRANCH}"
+            echo "SHA: ${SHA}"
+
+            # --------------------------------------------------
+            # Make sure compose configuration exists
+            # --------------------------------------------------
+
+            test -f docker-compose.yml || {
+              echo "docker-compose.yml not found"
+              exit 1
+            }
+
+            # --------------------------------------------------
+            # Load Infisical machine credentials
+            # --------------------------------------------------
+
             if ! test -r /etc/infisical.env; then
-              echo "/etc/infisical.env is not readable by $(whoami)."
+              echo "/etc/infisical.env is not readable by $(whoami)"
               exit 1
             fi
+
             set -a
             . /etc/infisical.env
             set +a
-            : "${INFISICAL_CLIENT_ID:?missing INFISICAL_CLIENT_ID in /etc/infisical.env}"
-            : "${INFISICAL_CLIENT_SECRET:?missing INFISICAL_CLIENT_SECRET in /etc/infisical.env}"
-            : "${INFISICAL_PROJECT_ID:?missing INFISICAL_PROJECT_ID in /etc/infisical.env}"
+
+            : "${INFISICAL_CLIENT_ID:?missing INFISICAL_CLIENT_ID}"
+            : "${INFISICAL_CLIENT_SECRET:?missing INFISICAL_CLIENT_SECRET}"
+            : "${INFISICAL_PROJECT_ID:?missing INFISICAL_PROJECT_ID}"
 
             export INFISICAL_DISABLE_UPDATE_CHECK=true
-            export INFISICAL_TOKEN="$(infisical login --method=universal-auth --client-id="$INFISICAL_CLIENT_ID" --client-secret="$INFISICAL_CLIENT_SECRET" --plain --silent)"
-            infisical export --silent --token="$INFISICAL_TOKEN" --projectId="$INFISICAL_PROJECT_ID" --env=staging --path=/backend --format=dotenv > .env.tmp
+
+            export INFISICAL_TOKEN="$(
+              infisical login \
+                --method=universal-auth \
+                --client-id="$INFISICAL_CLIENT_ID" \
+                --client-secret="$INFISICAL_CLIENT_SECRET" \
+                --plain \
+                --silent
+            )"
+
+            # --------------------------------------------------
+            # Refresh staging .env
+            # --------------------------------------------------
+
+            infisical export \
+              --silent \
+              --token="$INFISICAL_TOKEN" \
+              --projectId="$INFISICAL_PROJECT_ID" \
+              --env=staging \
+              --path=/backend \
+              --format=dotenv > .env.tmp
+
             mv .env.tmp .env
             chmod 600 .env
 
-            # Make sure Postgres is up before the app talks to it. The
-            # overlay publishes the db port to 127.0.0.1 so the bare-metal
-            # systemd app can reach the container. Idempotent: docker
-            # compose leaves a healthy container alone.
-            docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d db
+            # --------------------------------------------------
+            # GHCR login
+            # --------------------------------------------------
+
+            echo "$GHCR_PAT" | docker login ghcr.io \
+              -u "$GHCR_USERNAME" \
+              --password-stdin
+
+            # --------------------------------------------------
+            # Save current image for rollback
+            # --------------------------------------------------
+
+            PREV_IMAGE="$(
+              docker compose ps --format '{{.Image}}' server \
+              2>/dev/null | head -n1 || true
+            )"
+
+            echo "Previous staging image: ${PREV_IMAGE:-<none>}"
+            echo "New staging image: $IMAGE"
+
+            export IMAGE
+
+            # --------------------------------------------------
+            # Pull new image
+            # --------------------------------------------------
+
+            docker compose pull server
+
+            # --------------------------------------------------
+            # Ensure staging database is running
+            # --------------------------------------------------
+
+            docker compose up -d db
+
+            db_status="starting"
+
             for i in $(seq 1 30); do
-              status=$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose -f docker-compose.yml -f docker-compose.staging.yml ps -q db)" 2>/dev/null || echo "starting")
-              [ "$status" = "healthy" ] && break
-              echo "waiting for db (status=$status)..."
+              DB_CONTAINER="$(docker compose ps -q db)"
+
+              db_status="$(
+                docker inspect \
+                  --format='{{.State.Health.Status}}' \
+                  "$DB_CONTAINER" \
+                  2>/dev/null || echo starting
+              )"
+
+              echo "db health[$i]: $db_status"
+
+              [ "$db_status" = "healthy" ] && break
+
               sleep 2
             done
 
-            # Incremental build against the server's warm target/.
-            # --locked guards against silent Cargo.lock drift.
-            #
-            # SSH non-interactive shells skip ~/.profile, so rustup's PATH
-            # entry isn't there by default. Source the env file rustup
-            # installs (~/.cargo/env) if present, otherwise fall back to
-            # the conventional path so a missing toolchain surfaces with a
-            # clear error rather than "command not found".
-            export CARGO_TERM_COLOR=always
-            if [ -f "$HOME/.cargo/env" ]; then
-              # shellcheck disable=SC1091
-              . "$HOME/.cargo/env"
-            else
-              export PATH="$HOME/.cargo/bin:$PATH"
-            fi
-            command -v cargo >/dev/null || {
-              echo "cargo not on PATH after sourcing ~/.cargo/env"
-              echo "Install rustup as $(whoami): curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+            if [ "$db_status" != "healthy" ]; then
+              echo "::error::Staging database not healthy"
+              docker compose logs --tail=100 db
               exit 1
-            }
-            cargo build --release --locked
+            fi
 
-            # systemd unit ExecStart points at target/release/soai-backend
-            # so restart is a hot-swap. is-active gates failure reporting.
-            sudo systemctl restart "$SERVICE_NAME"
-            sudo systemctl is-active --quiet "$SERVICE_NAME"
+            # --------------------------------------------------
+            # Run migrations using NEW image before swap
+            # --------------------------------------------------
+
+            if ! docker compose run --rm server \
+              python manage.py migrate --noinput; then
+
+              echo "::error::Migration failed."
+              echo "Existing staging server has NOT been replaced."
+              exit 1
+            fi
+
+            # --------------------------------------------------
+            # Swap staging server
+            # --------------------------------------------------
+
+            if ! docker compose up \
+              -d \
+              --no-deps \
+              --remove-orphans \
+              server; then
+
+              echo "::error::Failed to start new staging server."
+
+              if [ -n "$PREV_IMAGE" ]; then
+                echo "Rolling back to $PREV_IMAGE"
+
+                IMAGE="$PREV_IMAGE" \
+                  docker compose up -d --no-deps server || true
+              fi
+
+              exit 1
+            fi
+
+            # --------------------------------------------------
+            # Wait for Docker healthcheck
+            # --------------------------------------------------
+
+            health_status="starting"
+
+            for i in $(seq 1 30); do
+              SERVER_CONTAINER="$(docker compose ps -q server)"
+
+              health_status="$(
+                docker inspect \
+                  --format='{{.State.Health.Status}}' \
+                  "$SERVER_CONTAINER" \
+                  2>/dev/null || echo starting
+              )"
+
+              echo "server health[$i]: $health_status"
+
+              [ "$health_status" = "healthy" ] && break
+              [ "$health_status" = "unhealthy" ] && break
+
+              sleep 2
+            done
+
+            # --------------------------------------------------
+            # Rollback if unhealthy
+            # --------------------------------------------------
+
+            if [ "$health_status" != "healthy" ]; then
+              echo "::error::Staging server unhealthy."
+
+              docker compose logs --tail=100 server || true
+
+              if [ -n "$PREV_IMAGE" ]; then
+                echo "Rolling back to $PREV_IMAGE"
+
+                IMAGE="$PREV_IMAGE" \
+                  docker compose up -d --no-deps server
+              fi
+
+              exit 1
+            fi
+
+            # --------------------------------------------------
+            # Extra host-level health check through port 8100
+            # --------------------------------------------------
+
+            if ! curl -fsS \
+              -H "Host: staging.schoolofai.so" \
+              http://127.0.0.1:8100/healthz >/dev/null; then
+
+              echo "::error::Host healthcheck failed on 127.0.0.1:8100"
+
+              if [ -n "$PREV_IMAGE" ]; then
+                echo "Rolling back to $PREV_IMAGE"
+
+                IMAGE="$PREV_IMAGE" \
+                  docker compose up -d --no-deps server
+              fi
+
+              exit 1
+            fi
+
+            echo "✅ Staging deployment healthy"
+
+            # --------------------------------------------------
+            # Cleanup dangling Docker images
+            # --------------------------------------------------
+
+            docker image prune -f
+
 
   notify-pr:
+    name: Comment deployment status on PR
     needs: deploy
     if: always()
     runs-on: ubuntu-latest
+
+    env:
+      PRIVATE_REPO: ${{ github.event.client_payload.repository }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      SHA: ${{ github.event.client_payload.sha }}
+
     steps:
       - name: Comment deployment status on PR (success)
         if: needs.deploy.result == 'success'
         run: |
           set -euo pipefail
+
           curl -fsS -X POST \
             -H "Authorization: token ${{ secrets.SOAI_PRIVATE_REPO_PAT }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
-            -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-                '{body: ("Staging deploy succeeded for `" + $sha + "`\n\n" + $run)}')"
+            -d "$(jq -cn \
+              --arg sha "$SHA" \
+              --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              '{body:("✅ Staging deployment succeeded for `" + $sha + "`\n\n" + $run)}')"
 
       - name: Comment deployment status on PR (failure)
         if: needs.deploy.result != 'success'
         run: |
           set -euo pipefail
+
           curl -fsS -X POST \
             -H "Authorization: token ${{ secrets.SOAI_PRIVATE_REPO_PAT }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
-            -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-                '{body: ("Staging deploy failed. Run logs: " + $run)}')"
+            -d "$(jq -cn \
+              --arg sha "$SHA" \
+              --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              '{body:("❌ Staging deployment failed for `" + $sha + "`\n\nRun logs: " + $run)}')"
