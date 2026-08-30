@@ -35,8 +35,7 @@ name: transcode-video
 
 on:
   repository_dispatch:
-    types: [transcode_video]
-
+    types: [lms_transcode_video]
 # A second dispatch for the same asset cancels the in-flight job — only the
 # latest upload matters.
 # CHANGED: keyed on asset_id (our media_assets row) rather than submodule_id.
@@ -44,7 +43,7 @@ concurrency:
   group: transcode-${{ github.event.client_payload.asset_id }}
   cancel-in-progress: true
 
-permissions:
+permissions:types: [transcode_video]
   contents: read
 
 jobs:
