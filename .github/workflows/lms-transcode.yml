@@ -22,8 +22,9 @@
 #        INFISICAL_PROJECT_SLUG
 #        INFISICAL_ENV_SLUG        # e.g. "staging" or "prod"
 #   2. In Infisical, store:
-#        R2_ACCESS_KEY_ID          # SEPARATE token from the backend's. Scope:
-#        R2_SECRET_ACCESS_KEY      #   read on the source bucket, write on the public one.
+#        R2_ACCESS_KEY_ID          # SEPARATE token from the backend's. Scope it
+#        R2_SECRET_ACCESS_KEY      #   read+write on R2_BUCKET below — one bucket
+#                                  #   holds both the raw upload and the HLS output.
 #        R2_ENDPOINT               # https://<account-id>.r2.cloudflarestorage.com
 #        R2_BUCKET                 # CHANGED: ONE bucket per environment (e.g. lms-staging)
 #        R2_PUBLIC_BASE            # CHANGED: the media Worker's domain, no trailing slash
@@ -144,6 +145,7 @@ jobs:
           set -euo pipefail
           : "${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID missing — Infisical fetch failed}"
           : "${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY missing — Infisical fetch failed}"
+          : "${R2_ENDPOINT:?R2_ENDPOINT missing — Infisical fetch failed}"
           # CHANGED: one bucket per environment holds source and output alike.
           : "${R2_BUCKET:?R2_BUCKET missing}"
           : "${R2_PUBLIC_BASE:?R2_PUBLIC_BASE missing}"
@@ -226,6 +228,14 @@ jobs:
 
           mkdir -p out
           for j in $(seq 0 "$N"); do mkdir -p "out/v$j"; done
+          # The audio variant carries `name:audio` in the map below, and ffmpeg
+          # substitutes a variant's name for %v when it has one — so that
+          # stream writes to out/vaudio/, which the index loop above never
+          # creates, and ffmpeg cannot create an output directory itself.
+          # Made unconditional rather than conditional on ffmpeg's version:
+          # if %v resolves to the index instead, this is an empty directory
+          # that `aws s3 sync` skips. Costs nothing, removes a hard failure.
+          mkdir -p out/vaudio
 
           SPLIT_LABELS=""
           for j in $(seq 1 "$N"); do SPLIT_LABELS+="[s$j]"; done
