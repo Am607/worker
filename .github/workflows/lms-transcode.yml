@@ -1,5 +1,13 @@
 # Video transcode pipeline (raw R2 -> HLS R2 -> notify backend).
 #
+# FILENAME MATTERS. This must be `lms-transcode.yml`. The dispatch repo
+# (Am607/worker) also holds `transcode.yml`, which is ANOTHER project's
+# transcoder. Overwriting that one breaks the other project; giving this one
+# the same `repository_dispatch` type as that one makes both run on every LMS
+# upload, and the other would report a failure for a video that is none of its
+# business. Hence the product-specific event name below, which must stay in
+# step with EventType in internal/pkg/transcoder/github.go.
+#
 # Adapted for the School / LMS project. Differences from the original are
 # marked "CHANGED:" so they are easy to review.
 #
@@ -17,9 +25,8 @@
 #        R2_ACCESS_KEY_ID          # SEPARATE token from the backend's. Scope:
 #        R2_SECRET_ACCESS_KEY      #   read on the source bucket, write on the public one.
 #        R2_ENDPOINT               # https://<account-id>.r2.cloudflarestorage.com
-#        R2_SOURCE_BUCKET          # CHANGED: private bucket holding the upload  (e.g. lms)
-#        R2_PUBLIC_BUCKET          # CHANGED: public bucket serving HLS          (e.g. lms-public)
-#        R2_PUBLIC_BASE            # e.g. https://pub-xxxx.r2.dev  (no trailing slash)
+#        R2_BUCKET                 # CHANGED: ONE bucket per environment (e.g. lms-staging)
+#        R2_PUBLIC_BASE            # CHANGED: the media Worker's domain, no trailing slash
 #        TRANSCODE_WEBHOOK_SECRET  # shared with the backend, for HMAC signing
 #        TRANSCODE_CALLBACK_URL    # CHANGED: now a secret, not a payload field. See below.
 #   3. Give the backend's PAT `actions:write` on this repo so it can dispatch.
@@ -36,6 +43,7 @@ name: transcode-video
 on:
   repository_dispatch:
     types: [lms_transcode_video]
+
 # A second dispatch for the same asset cancels the in-flight job — only the
 # latest upload matters.
 # CHANGED: keyed on asset_id (our media_assets row) rather than submodule_id.
@@ -43,7 +51,7 @@ concurrency:
   group: transcode-${{ github.event.client_payload.asset_id }}
   cancel-in-progress: true
 
-permissions:types: [transcode_video]
+permissions:
   contents: read
 
 jobs:
@@ -72,10 +80,12 @@ jobs:
           # This is the important one. It pins the download to exactly the path
           # this job is allowed to read. Without it, a forged dispatch could name
           # any key in the bucket and have the runner fetch it.
-          # CHANGED: path is now <tenant>/video/<asset>/ instead of raw/<id>/.
+          # CHANGED: the final layout is tenant/<t>/videos/raw/<asset>.<ext> —
+          # the asset id is the FILENAME, not a directory. The previous glob
+          # expected a trailing slash and would have rejected every real job.
           case "$SOURCE_KEY" in
-            "$TENANT_ID"/video/"$ASSET_ID"/*) ;;
-            *) echo "source_key outside $TENANT_ID/video/$ASSET_ID/"; exit 1 ;;
+            tenant/"$TENANT_ID"/videos/raw/"$ASSET_ID".*) ;;
+            *) echo "source_key outside tenant/$TENANT_ID/videos/raw/$ASSET_ID.*"; exit 1 ;;
           esac
 
       - name: Load secrets from Infisical
@@ -134,9 +144,8 @@ jobs:
           set -euo pipefail
           : "${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID missing — Infisical fetch failed}"
           : "${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY missing — Infisical fetch failed}"
-          # CHANGED: two buckets now, so both are required up front.
-          : "${R2_SOURCE_BUCKET:?R2_SOURCE_BUCKET missing}"
-          : "${R2_PUBLIC_BUCKET:?R2_PUBLIC_BUCKET missing}"
+          # CHANGED: one bucket per environment holds source and output alike.
+          : "${R2_BUCKET:?R2_BUCKET missing}"
           : "${R2_PUBLIC_BASE:?R2_PUBLIC_BASE missing}"
           # Map R2_* -> AWS_* for aws CLI. Mask explicitly (Infisical already masks, belt+braces).
           echo "::add-mask::$R2_ACCESS_KEY_ID"
@@ -152,9 +161,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p work
-          # CHANGED: reads from the PRIVATE bucket. The original upload is the
-          # master copy and is never served to anyone.
-          aws s3 cp "s3://${R2_SOURCE_BUCKET}/${SOURCE_KEY}" work/input \
+          # The original upload is the master copy. It stays under videos/raw/,
+          # which the media Worker refuses to serve to anybody — only the HLS
+          # derivative is ever delivered.
+          aws s3 cp "s3://${R2_BUCKET}/${SOURCE_KEY}" work/input \
             --endpoint-url "${R2_ENDPOINT}" \
             --no-progress
 
@@ -254,19 +264,19 @@ jobs:
       - name: Upload HLS output to R2
         run: |
           set -euo pipefail
-          # CHANGED: tenant-scoped destination, in the PUBLIC bucket.
-          DEST="${TENANT_ID}/hls/${ASSET_ID}"
+          # CHANGED: final layout — tenant/<t>/videos/hls/<asset>/
+          DEST="tenant/${TENANT_ID}/videos/hls/${ASSET_ID}"
 
           # Two passes because the two file types want different headers.
           # Segments never change once written, so they are cached forever;
           # playlists are cached briefly so a re-transcode is picked up.
-          aws s3 sync out/ "s3://${R2_PUBLIC_BUCKET}/${DEST}/" \
+          aws s3 sync out/ "s3://${R2_BUCKET}/${DEST}/" \
             --endpoint-url "${R2_ENDPOINT}" \
             --no-progress \
             --content-type "video/mp2t" \
             --cache-control "public, max-age=31536000, immutable" \
             --exclude "*" --include "*.ts"
-          aws s3 sync out/ "s3://${R2_PUBLIC_BUCKET}/${DEST}/" \
+          aws s3 sync out/ "s3://${R2_BUCKET}/${DEST}/" \
             --endpoint-url "${R2_ENDPOINT}" \
             --no-progress \
             --content-type "application/vnd.apple.mpegurl" \
