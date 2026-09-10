@@ -36,7 +36,8 @@ jobs:
             *) echo "sha must be a full 40-char commit sha, got: $SHA"; exit 1 ;;
           esac
           case "$PR_NUMBER" in
-            ''|*[!0-9]*) echo "invalid pr_number: $PR_NUMBER"; exit 1 ;;
+            '') ;;
+            *[!0-9]*) echo "invalid pr_number: $PR_NUMBER"; exit 1 ;;
           esac
 
   build-and-push-image:
@@ -229,7 +230,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Comment deployment status on PR (success)
-        if: needs.deploy-to-vps.result == 'success'
+        if: needs.deploy-to-vps.result == 'success' && env.PR_NUMBER != ''
         run: |
           set -euo pipefail
           curl -fsS -X POST \
@@ -240,7 +241,7 @@ jobs:
                 '{body: ("✅ Staging deploy succeeded for `" + $sha + "`\n\n" + $run)}')"
 
       - name: Comment deployment status on PR (failure)
-        if: needs.deploy-to-vps.result != 'success'
+        if: needs.deploy-to-vps.result != 'success' && env.PR_NUMBER != ''
         run: |
           set -euo pipefail
           curl -fsS -X POST \
