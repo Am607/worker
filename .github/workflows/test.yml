@@ -1,0 +1,55 @@
+name: Check Oracle Server
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check-server:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Connect and inspect server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+
+          script: |
+            echo "================================"
+            echo " SERVER INFORMATION"
+            echo "================================"
+
+            echo ""
+            echo "Current user:"
+            whoami
+
+            echo ""
+            echo "Hostname:"
+            hostname
+
+            echo ""
+            echo "Operating system:"
+            cat /etc/os-release | head -n 3
+
+            echo ""
+            echo "Local IP addresses:"
+            hostname -I
+
+            echo ""
+            echo "Public IP:"
+            curl -4 -s https://api.ipify.org || echo "Could not detect public IP"
+
+            echo ""
+            echo ""
+            echo "Home directory:"
+            echo "$HOME"
+
+            echo ""
+            echo "SSH directory:"
+            ls -la ~/.ssh 2>/dev/null || echo "No .ssh directory"
+
+            echo ""
+            echo "================================"
+            echo " Connection successful"
+            echo "================================"
