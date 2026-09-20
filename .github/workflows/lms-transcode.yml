@@ -1,45 +1,4 @@
-# Video transcode pipeline (raw R2 -> HLS R2 -> notify backend).
-#
-# FILENAME MATTERS. This must be `lms-transcode.yml`. The dispatch repo
-# (Am607/worker) also holds `transcode.yml`, which is ANOTHER project's
-# transcoder. Overwriting that one breaks the other project; giving this one
-# the same `repository_dispatch` type as that one makes both run on every LMS
-# upload, and the other would report a failure for a video that is none of its
-# business. Hence the product-specific event name below, which must stay in
-# step with EventType in internal/pkg/transcoder/github.go.
-#
-# Adapted for the School / LMS project. Differences from the original are
-# marked "CHANGED:" so they are easy to review.
-#
-# Push this repo to GitHub as a PUBLIC repo (Actions minutes are free there, and
-# nothing secret lives in this file — every credential comes from Infisical at
-# run time).
-#
-# Setup on this repo:
-#   1. Settings -> Secrets and variables -> Actions, add:
-#        INFISICAL_CLIENT_ID
-#        INFISICAL_CLIENT_SECRET
-#        INFISICAL_PROJECT_SLUG
-#        INFISICAL_ENV_SLUG        # e.g. "staging" or "prod"
-#   2. In Infisical, store:
-#        R2_ACCESS_KEY_ID          # SEPARATE token from the backend's. Scope it
-#        R2_SECRET_ACCESS_KEY      #   read+write on R2_BUCKET below — one bucket
-#                                  #   holds both the raw upload and the HLS output.
-#        R2_ENDPOINT               # https://<account-id>.r2.cloudflarestorage.com
-#        R2_BUCKET                 # CHANGED: ONE bucket per environment (e.g. lms-staging)
-#        R2_PUBLIC_BASE            # CHANGED: the media Worker's domain, no trailing slash
-#        TRANSCODE_WEBHOOK_SECRET  # shared with the backend, for HMAC signing
-#        TRANSCODE_CALLBACK_URL    # CHANGED: now a secret, not a payload field. See below.
-#   3. Give the backend's PAT `actions:write` on this repo so it can dispatch.
-#
-# CHANGED — why the callback URL is no longer taken from the dispatch payload:
-#   Anything in client_payload is chosen by whoever triggers the workflow. Taking
-#   a URL from there and POSTing to it means a forged dispatch could aim this
-#   runner at any host — and hand it a validly-signed request. Reading it from
-#   Infisical instead removes that entirely, and the env-slug already selects
-#   staging vs production, which is the only reason it varied.
-
-name: transcode-video
+name: lms transcode-video
 
 on:
   repository_dispatch:
