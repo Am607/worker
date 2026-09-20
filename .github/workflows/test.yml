@@ -22,8 +22,8 @@ jobs:
 
             echo ""
             echo "Current user:"
-            whoami
-
+            echo "$(whoami)00"
+            
             echo ""
             echo "Hostname:"
             hostname
@@ -37,8 +37,8 @@ jobs:
             hostname -I
 
             echo ""
-            echo "Public IP:"
-            curl -4 -s https://api.ipify.org || echo "Could not detect public IP"
+            PUBLIC_IP=$(curl -4 -s https://api.ipify.org)
+            echo "Public IP: ${PUBLIC_IP}00"
 
             echo ""
             echo ""
