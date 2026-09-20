@@ -53,8 +53,8 @@ jobs:
         with:
           client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
           client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
-          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
-          env-slug: ${{ secrets.INFISICAL_ENV_SLUG }}
+          project-slug: ${{ secrets.LMS_INFISICAL_PROJECT_SLUG }}
+          env-slug: ${{ secrets.LMS_INFISICAL_ENV_SLUG }}
           secret-path: ${{ vars.INFISICAL_SECRET_PATH || '/' }}
           export-type: env
           # The action masks fetched values in logs by default.
