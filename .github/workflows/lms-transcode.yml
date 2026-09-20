@@ -1,4 +1,4 @@
-name: lms transcode-video
+name: lms-transcode-video
 
 on:
   repository_dispatch:
