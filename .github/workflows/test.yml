@@ -23,7 +23,7 @@ jobs:
             echo ""
             echo "Current user:"
             echo "$(whoami)00"
-            
+
             echo ""
             echo "Hostname:"
             hostname
@@ -41,7 +41,6 @@ jobs:
             echo "Public IP: ${PUBLIC_IP}00"
 
             echo ""
-            echo ""
             echo "Home directory:"
             echo "$HOME"
 
@@ -53,3 +52,15 @@ jobs:
             echo "================================"
             echo " Connection successful"
             echo "================================"
+
+      - name: Verify Oracle secrets
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+          ORACLE_SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+        run: |
+          echo "Checking secrets..."
+
+          [ -n "$ORACLE_HOST" ] && echo "✅ ORACLE_HOST is set" || echo "❌ ORACLE_HOST is empty"
+          [ -n "$ORACLE_USER" ] && echo "✅ ORACLE_USER is set" || echo "❌ ORACLE_USER is empty"
+          [ -n "$ORACLE_SSH_KEY" ] && echo "✅ ORACLE_SSH_KEY is set" || echo "❌ ORACLE_SSH_KEY is empty"
