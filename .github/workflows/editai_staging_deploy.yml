@@ -423,6 +423,12 @@ jobs:
             echo "✅ Staging deployment healthy"
 
             # --------------------------------------------------
+            # Start/refresh redis + celery worker and beat on the new image
+            # --------------------------------------------------
+
+            docker compose up -d --no-deps redis celery-worker celery-beat
+
+            # --------------------------------------------------
             # Cleanup dangling Docker images
             # --------------------------------------------------
 
