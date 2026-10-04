@@ -210,9 +210,7 @@ jobs:
           {
             echo "host=$DROPLET_HOST"
             echo "username=$DROPLET_USER"
-            echo "key<<EOF_KEY"
-            cat "$key_path"
-            echo "EOF_KEY"
+            echo "key_path=$key_path"
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload compose file to server
@@ -220,7 +218,7 @@ jobs:
         with:
           host: ${{ steps.ssh.outputs.host }}
           username: ${{ steps.ssh.outputs.username }}
-          key: ${{ steps.ssh.outputs.key }}
+          key_path: ${{ steps.ssh.outputs.key_path }}
           source: app/edit_ai_backend/docker-compose.staging.yml
           strip_components: 2
           target: ${{ env.DROPLET_APP_DIR }}
@@ -231,7 +229,7 @@ jobs:
         with:
           host: ${{ steps.ssh.outputs.host }}
           username: ${{ steps.ssh.outputs.username }}
-          key: ${{ steps.ssh.outputs.key }}
+          key_path: ${{ steps.ssh.outputs.key_path }}
           source: editai-app.env
           target: ${{ env.DROPLET_APP_DIR }}
 
@@ -254,7 +252,7 @@ jobs:
         with:
           host: ${{ steps.ssh.outputs.host }}
           username: ${{ steps.ssh.outputs.username }}
-          key: ${{ steps.ssh.outputs.key }}
+          key_path: ${{ steps.ssh.outputs.key_path }}
 
           envs: IMAGE,IMAGE_BASE,GHCR_USERNAME,GHCR_PAT,DROPLET_APP_DIR,DJANGO_ALLOWED_HOSTS,PR_NUMBER,PR_BRANCH,SHA
 
