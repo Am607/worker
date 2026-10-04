@@ -431,14 +431,14 @@ jobs:
             fi
 
             # --------------------------------------------------
-            # Extra host-level health check through port 8100
+            # Extra host-level health check through port 80
             # --------------------------------------------------
 
             if ! curl -fsS \
               -H "Host: ${DJANGO_ALLOWED_HOSTS%%,*}" \
-              http://127.0.0.1:8200/admin/login/ >/dev/null; then
+              http://127.0.0.1:80/admin/login/ >/dev/null; then
 
-              echo "::error::Host healthcheck failed on 127.0.0.1:8100"
+              echo "::error::Host healthcheck failed on 127.0.0.1:80"
 
               if [ -n "$PREV_IMAGE" ]; then
                 echo "Rolling back to $PREV_IMAGE"
