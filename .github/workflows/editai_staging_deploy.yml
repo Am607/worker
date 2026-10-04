@@ -200,7 +200,7 @@ jobs:
           key_path="$RUNNER_TEMP/editai_staging_deploy_key"
 
           printf '%b\n' "$DROPLET_SSH_KEY" > "$key_path"
-          chmod 600 "$key_path"
+          chmod 644 "$key_path"
 
           if ! grep -q 'BEGIN .*PRIVATE KEY' "$key_path"; then
             echo "::error::DROPLET_SSH_KEY must be the full private key, not the .pub key."
@@ -467,7 +467,7 @@ jobs:
       - name: Remove env file from runner
         if: always()
         shell: bash
-        run: rm -f "$GITHUB_WORKSPACE"/editai-app.env "$GITHUB_WORKSPACE"/editai-app.env.filtered
+        run: rm -f "$GITHUB_WORKSPACE"/editai-app.env "$GITHUB_WORKSPACE"/editai-app.env.filtered "$RUNNER_TEMP"/editai_staging_deploy_key
 
 
 
