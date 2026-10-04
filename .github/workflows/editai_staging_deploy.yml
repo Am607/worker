@@ -292,7 +292,7 @@ jobs:
               exit 1
             }
 
-            chmod 600 editai-app.env
+            chmod 644 editai-app.env
             mv -f editai-app.env .env
 
 
