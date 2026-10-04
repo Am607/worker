@@ -178,7 +178,7 @@ jobs:
 
           rm -f "$src"
           mv "$out" "$src"
-          chmod 600 "$src"
+          chmod 644 "$src"
 
           if ! test -s "$src" || grep -q 'PRIVATE KEY' "$src" || grep -q '^DROPLET_' "$src"; then
             echo "::error::App env file is empty or still contains deploy credentials."
@@ -292,7 +292,7 @@ jobs:
               exit 1
             }
 
-            chmod 644 editai-app.env
+            chmod 600 editai-app.env
             mv -f editai-app.env .env
 
 
