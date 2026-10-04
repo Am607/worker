@@ -135,6 +135,56 @@ jobs:
           secret-path: /backend
           export-type: env
 
+
+      - name: Export app env file from Infisical
+        uses: Infisical/secrets-action@v1.0.7
+        with:
+          method: universal
+          client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          project-slug: ${{ secrets.EDITAI_INFISICAL_PROJECT_SLUG }}
+          env-slug: staging
+          secret-path: /backend
+          export-type: file
+          # written to $GITHUB_WORKSPACE/editai-app.env
+          file-output-path: /editai-app.env
+
+      - name: Drop deploy-only credentials from app env file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          src="$GITHUB_WORKSPACE/editai-app.env"
+          out="$GITHUB_WORKSPACE/editai-app.env.filtered"
+          test -s "$src" || { echo "::error::Infisical env file is empty."; exit 1; }
+
+          # Entries are KEY='value' and may span lines. Skip DROPLET_* entries.
+          awk -v q="'" '
+            !open && $0 ~ ("^[A-Za-z_][A-Za-z0-9_]*=" q) {
+              skip = ($0 ~ /^DROPLET_/)
+              rem = $0
+              sub("^[^=]*=" q, "", rem)
+              if (rem !~ (q "$")) open = 1
+              if (!skip) print
+              next
+            }
+            open {
+              if ($0 ~ (q "$")) open = 0
+              if (!skip) print
+              next
+            }
+            { if (!skip) print }
+          ' "$src" > "$out"
+
+          rm -f "$src"
+          mv "$out" "$src"
+          chmod 600 "$src"
+
+          if ! test -s "$src" || grep -q 'PRIVATE KEY' "$src" || grep -q '^DROPLET_' "$src"; then
+            echo "::error::App env file is empty or still contains deploy credentials."
+            exit 1
+          fi
+
       - name: Prepare SSH key
         id: ssh
         shell: bash
@@ -173,6 +223,16 @@ jobs:
           key: ${{ steps.ssh.outputs.key }}
           source: app/edit_ai_backend/docker-compose.staging.yml
           strip_components: 2
+          target: ${{ env.DROPLET_APP_DIR }}
+
+
+      - name: Upload app env file to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ steps.ssh.outputs.host }}
+          username: ${{ steps.ssh.outputs.username }}
+          key: ${{ steps.ssh.outputs.key }}
+          source: editai-app.env
           target: ${{ env.DROPLET_APP_DIR }}
 
       - name: SSH in, migrate, swap server, healthcheck, rollback on failure
@@ -224,47 +284,17 @@ jobs:
             echo "Using Compose files: $COMPOSE_FILE"
 
             # --------------------------------------------------
-            # Load Infisical machine credentials
+            # Install the app .env uploaded by the workflow
             # --------------------------------------------------
 
-            if ! test -r /etc/infisical.env; then
-              echo "/etc/infisical.env is not readable by $(whoami)"
+            test -s editai-app.env || {
+              echo "editai-app.env was not uploaded"
               exit 1
-            fi
+            }
 
-            set -a
-            . /etc/infisical.env
-            set +a
+            chmod 600 editai-app.env
+            mv -f editai-app.env .env
 
-            : "${INFISICAL_CLIENT_ID:?missing INFISICAL_CLIENT_ID}"
-            : "${INFISICAL_CLIENT_SECRET:?missing INFISICAL_CLIENT_SECRET}"
-            : "${INFISICAL_PROJECT_ID:?missing INFISICAL_PROJECT_ID}"
-
-            export INFISICAL_DISABLE_UPDATE_CHECK=true
-
-            export INFISICAL_TOKEN="$(
-              infisical login \
-                --method=universal-auth \
-                --client-id="$INFISICAL_CLIENT_ID" \
-                --client-secret="$INFISICAL_CLIENT_SECRET" \
-                --plain \
-                --silent
-            )"
-
-            # --------------------------------------------------
-            # Refresh staging .env
-            # --------------------------------------------------
-
-            infisical export \
-              --silent \
-              --token="$INFISICAL_TOKEN" \
-              --projectId="$INFISICAL_PROJECT_ID" \
-              --env=staging \
-              --path=/backend \
-              --format=dotenv > .env.tmp
-
-            mv .env.tmp .env
-            chmod 600 .env
 
             # --------------------------------------------------
             # GHCR login
@@ -435,6 +465,12 @@ jobs:
             # --------------------------------------------------
 
             docker image prune -f
+
+      - name: Remove env file from runner
+        if: always()
+        shell: bash
+        run: rm -f "$GITHUB_WORKSPACE"/editai-app.env "$GITHUB_WORKSPACE"/editai-app.env.filtered
+
 
 
   notify-pr:
