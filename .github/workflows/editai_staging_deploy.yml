@@ -436,9 +436,9 @@ jobs:
 
             if ! curl -fsS \
               -H "Host: ${DJANGO_ALLOWED_HOSTS%%,*}" \
-              http://127.0.0.1:80/admin/login/ >/dev/null; then
+              http://127.0.0.1:8000/admin/login/ >/dev/null; then
 
-              echo "::error::Host healthcheck failed on 127.0.0.1:80"
+              echo "::error::Host healthcheck failed on 127.0.0.1:8000"
 
               if [ -n "$PREV_IMAGE" ]; then
                 echo "Rolling back to $PREV_IMAGE"
