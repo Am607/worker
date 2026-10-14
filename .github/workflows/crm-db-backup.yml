@@ -72,7 +72,7 @@ jobs:
           client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           project-slug: ${{ secrets.CRM_INFISICAL_PROJECT_SLUG }}
           env-slug: staging
-          secret-path: /backup
+          secret-path: /worker
           export-type: env
 
       - name: Validate secrets
