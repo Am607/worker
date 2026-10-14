@@ -87,30 +87,20 @@ jobs:
             ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
           fi
 
-
       - name: Create compressed dump on Droplet
         id: dump
         shell: bash
         run: |
           set -euo pipefail
 
-          : "${DB_CONNECTION:?Missing DB_CONNECTION}"
-          : "${DB_DATABASE:?Missing DB_DATABASE}"
-          : "${DB_USERNAME:?Missing DB_USERNAME}"
-          : "${DB_PASSWORD:?Missing DB_PASSWORD}"
-          : "${DB_CONTAINER:?Missing DB_CONTAINER}"
-
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-
           case "$DB_CONNECTION" in
             mysql) name="crm-prod-$stamp.sql.gz" ;;
             pgsql) name="crm-prod-$stamp.dump" ;;
-            *)
-              echo "::error::Unsupported DB_CONNECTION"
-              exit 1
-              ;;
           esac
 
+          # The script (with credentials as variables) is sent over SSH stdin,
+          # so the DB password never appears in a process list or in the logs.
           {
             printf 'DB_CONNECTION=%q\n' "$DB_CONNECTION"
             printf 'DB_DATABASE=%q\n' "$DB_DATABASE"
@@ -119,75 +109,39 @@ jobs:
             printf 'DB_CONTAINER=%q\n' "$DB_CONTAINER"
             printf 'REMOTE_DIR=%q\n' "$REMOTE_DIR"
             printf 'NAME=%q\n' "$name"
-
             cat <<'REMOTE'
           set -euo pipefail
           umask 077
-
           mkdir -p "$HOME/$REMOTE_DIR"
           out="$HOME/$REMOTE_DIR/$NAME"
-
-          echo "Starting database backup..."
 
           case "$DB_CONNECTION" in
             mysql)
               export MYSQL_PWD="$DB_PASSWORD"
-
               docker exec -e MYSQL_PWD "$DB_CONTAINER" \
-                mysqldump \
-                  -u"$DB_USERNAME" \
-                  --single-transaction \
-                  --quick \
-                  --no-tablespaces \
-                  --set-gtid-purged=OFF \
-                  "$DB_DATABASE" \
+                mysqldump -u"$DB_USERNAME" --single-transaction --quick --no-tablespaces --set-gtid-purged=OFF "$DB_DATABASE" \
                 | gzip -9 > "$out"
-
               gzip -t "$out"
-
-              gzip -dc "$out" | tail -n 1 | \
-                grep -q '^-- Dump completed' || {
-                  echo "Database dump is incomplete." >&2
-                  exit 1
-                }
+              gzip -dc "$out" | tail -n 1 | grep -q '^-- Dump completed' \
+                || { echo "Dump is incomplete (missing 'Dump completed' trailer)." >&2; exit 1; }
               ;;
-
             pgsql)
               export PGPASSWORD="$DB_PASSWORD"
-
               docker exec -e PGPASSWORD "$DB_CONTAINER" \
-                pg_dump \
-                  -U "$DB_USERNAME" \
-                  -d "$DB_DATABASE" \
-                  --format=custom \
-                  --compress=9 \
-                  --no-owner \
+                pg_dump -U "$DB_USERNAME" -d "$DB_DATABASE" --format=custom --compress=9 --no-owner \
                 > "$out"
-
-              docker exec -i "$DB_CONTAINER" \
-                pg_restore --list < "$out" > /dev/null
+              docker exec -i "$DB_CONTAINER" pg_restore --list < "$out" > /dev/null
               ;;
           esac
 
-          [ -s "$out" ] || {
-            echo "Backup file is empty." >&2
-            exit 1
-          }
-
-          echo "Backup completed successfully."
+          [ -s "$out" ] || { echo "Dump file is empty." >&2; exit 1; }
           du -h "$out" | cut -f1
           REMOTE
+          } | ssh -o BatchMode=yes -o ServerAliveInterval=30 "$VPS_USER@$VPS_HOST" 'bash -s' > "$RUNNER_TEMP/dump-size"
 
-          } | ssh \
-            -o BatchMode=yes \
-            -o ServerAliveInterval=30 \
-            "$VPS_USER@$VPS_HOST" \
-            'bash -s' > "$RUNNER_TEMP/dump-size"
-
-          echo "Compressed dump size: $(tail -n 1 "$RUNNER_TEMP/dump-size")"
+          echo "Compressed dump size: $(cat "$RUNNER_TEMP/dump-size")"
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
-
 
       - name: Copy dump from Droplet
         shell: bash
