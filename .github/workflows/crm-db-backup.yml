@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  R2_PREFIX: crm/staging
+  R2_PREFIX: crm/prod
   # Relative to the SSH user's $HOME on the Droplet; removed at the end of every run.
   REMOTE_DIR: crm-db-backup-tmp/${{ github.run_id }}
 
@@ -35,7 +35,7 @@ jobs:
           client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
           client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           project-slug: ${{ secrets.CRM_INFISICAL_PROJECT_SLUG }}
-          env-slug: staging
+          env-slug: prod
           secret-path: /backend
           export-type: env
 
@@ -45,7 +45,7 @@ jobs:
           client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
           client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           project-slug: ${{ secrets.CRM_INFISICAL_PROJECT_SLUG }}
-          env-slug: staging
+          env-slug: prod
           secret-path: /worker
           export-type: env
 
