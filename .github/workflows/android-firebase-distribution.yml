@@ -1,4 +1,4 @@
-name: SOAI Android Firebase App Distribution
+name: Android Firebase App Distribution
 
 on:
   workflow_dispatch:
@@ -58,11 +58,6 @@ jobs:
           flutter pub get
           flutter build apk --release
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -71,8 +66,10 @@ jobs:
       - name: Upload APK to Firebase App Distribution
         env:
           FIREBASE_APP_ID: 1:776978188107:android:28d4d83f0619f0e656cace
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
           npx --yes firebase-tools appdistribution:distribute \
             build/app/outputs/flutter-apk/app-release.apk \
             --app "$FIREBASE_APP_ID" \
-            --release-notes "Automated Android build $GITHUB_RUN_NUMBER from ${{ inputs.caller_ref }}"
+            --groups "qa" \
+            --token "$FIREBASE_TOKEN"
