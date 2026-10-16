@@ -1,4 +1,4 @@
-name: Android Internal Testing
+name: SOAI Android Internal Testing
 
 on:
   workflow_dispatch:
