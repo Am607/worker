@@ -1,4 +1,4 @@
-name: Android Firebase App Distribution
+name: SOAI Android Firebase App Distribution
 
 on:
   workflow_dispatch:
