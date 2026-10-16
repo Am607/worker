@@ -1,4 +1,4 @@
-name: DB backup
+name: CRM DB backup
 run-name: DB backup ${{ inputs.request_id }} (${{ inputs.reason }})
 
 on:
