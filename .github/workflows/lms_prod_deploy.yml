@@ -1,3 +1,4 @@
+
 name: lms-prod-deploy
 
 on:
@@ -17,35 +18,48 @@ env:
   PRIVATE_REPO: ${{ github.event.client_payload.repository }}
   SHA: ${{ github.event.client_payload.sha }}
   PR_NUMBER: ${{ github.event.client_payload.pr_number }}
-  ENVIRONMENT: prod
 
 jobs:
+  # -----------------------------------------
+  # 1. VALIDATE PAYLOAD
+  # -----------------------------------------
   validate-payload:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+
     steps:
-      - name: Validate payload
+      - name: Validate deployment payload
+        shell: bash
         run: |
           set -euo pipefail
-          case "$PRIVATE_REPO" in
-            Am607/lms_go) ;;
-            *) echo "unexpected repository: $PRIVATE_REPO"; exit 1 ;;
-          esac
-          case "$SHA" in
-            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-            *) echo "sha must be a full 40-char commit sha, got: $SHA"; exit 1 ;;
-          esac
-          case "$PR_NUMBER" in
-            '') ;;
-            *[!0-9]*) echo "invalid pr_number: $PR_NUMBER"; exit 1 ;;
-          esac
 
+          if [[ "$PRIVATE_REPO" != "Am607/lms_go" ]]; then
+            echo "Invalid repository: $PRIVATE_REPO"
+            exit 1
+          fi
+
+          if [[ ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid commit SHA"
+            exit 1
+          fi
+
+          if [[ -n "$PR_NUMBER" && ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "Invalid PR number"
+            exit 1
+          fi
+
+          echo "Payload validated successfully"
+
+  # -----------------------------------------
+  # 2. BUILD AND PUSH DOCKER IMAGE
+  # -----------------------------------------
   build-and-push-image:
     needs: validate-payload
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
     steps:
-      - name: Checkout private repo at commit
+      - name: Checkout private repository
         uses: actions/checkout@v4
         with:
           repository: ${{ env.PRIVATE_REPO }}
@@ -53,11 +67,15 @@ jobs:
           token: ${{ secrets.LMS_PRIVATE_REPO_PAT }}
           fetch-depth: 1
 
-      - name: Verify checked-out commit matches dispatched SHA
+      - name: Verify commit
         run: |
           set -euo pipefail
           actual=$(git rev-parse HEAD)
-          [ "$actual" = "$SHA" ] || { echo "checked out $actual, expected $SHA"; exit 1; }
+
+          if [ "$actual" != "$SHA" ]; then
+            echo "Commit mismatch"
+            exit 1
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -69,7 +87,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push image
+      - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -78,12 +96,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # -----------------------------------------
+  # 3. COPY COMPOSE FILE TO ORACLE
+  # -----------------------------------------
   ship-compose-file:
     needs: build-and-push-image
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
-      - name: Checkout private repo at commit
+      - name: Checkout private repository
         uses: actions/checkout@v4
         with:
           repository: ${{ env.PRIVATE_REPO }}
@@ -91,7 +113,20 @@ jobs:
           token: ${{ secrets.LMS_PRIVATE_REPO_PAT }}
           fetch-depth: 1
 
-      - name: Copy docker-compose.prod.yml to VPS
+      - name: Verify production compose file
+        run: |
+          set -euo pipefail
+
+          ls -la
+
+          if [ ! -f docker-compose.prod.yml ]; then
+            echo "docker-compose.prod.yml not found!"
+            exit 1
+          fi
+
+          echo "Compose file verified"
+
+      - name: Copy compose file to Oracle VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.PROD_ORACLE_HOST }}
@@ -99,121 +134,295 @@ jobs:
           key: ${{ secrets.PROD_ORACLE_SSH_KEY }}
           port: ${{ secrets.PROD_ORACLE_SSH_PORT || 22 }}
           source: "docker-compose.prod.yml"
-          target: "/opt/lms_go"
-          strip_components: 0
+          target: "/opt/lms_go/"
+          overwrite: true
 
+  # -----------------------------------------
+  # 4. DEPLOY ON ORACLE VPS
+  # -----------------------------------------
   deploy-to-vps:
     needs: ship-compose-file
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
     steps:
-      - name: Deploy to Oracle VPS
-        id: deploy
+      - name: Deploy LMS to Oracle
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_ORACLE_HOST }}
           username: ${{ secrets.PROD_ORACLE_USER }}
           key: ${{ secrets.PROD_ORACLE_SSH_KEY }}
           port: ${{ secrets.PROD_ORACLE_SSH_PORT || 22 }}
+          command_timeout: 18m
           envs: IMAGE,SHA,INFISICAL_CLIENT_ID,INFISICAL_CLIENT_SECRET,LMS_INFISICAL_PROJECT_ID,INFISICAL_ENV_SLUG,GHCR_USER,GHCR_PAT
+
           script: |
+            bash -se <<'BASH'
             set -euo pipefail
+            umask 077
+
             cd /opt/lms_go
 
-            echo "== authenticating with Infisical =="
-            infisical login --method=universal-auth \
-              --client-id="${INFISICAL_CLIENT_ID}" \
-              --client-secret="${INFISICAL_CLIENT_SECRET}" --silent --plain > /tmp/infisical_token
-            export INFISICAL_TOKEN=$(cat /tmp/infisical_token)
+            RELEASE_IMAGE="${IMAGE}:${SHA}"
+            COMPOSE_FILE="docker-compose.prod.yml"
 
-            echo "== generating fresh .env =="
+            echo "========== PRODUCTION DEPLOYMENT =========="
+            echo "Deploying: ${RELEASE_IMAGE}"
+
+            # ----------------------------------
+            # INFISICAL AUTHENTICATION
+            # ----------------------------------
+            echo "== Authenticating with Infisical =="
+
+            TOKEN_FILE=$(mktemp)
+            trap 'rm -f "$TOKEN_FILE"' EXIT
+
+            infisical login \
+              --method=universal-auth \
+              --client-id="${INFISICAL_CLIENT_ID}" \
+              --client-secret="${INFISICAL_CLIENT_SECRET}" \
+              --silent --plain > "$TOKEN_FILE"
+
+            INFISICAL_TOKEN=$(cat "$TOKEN_FILE")
+
+            # ----------------------------------
+            # FETCH PRODUCTION ENVIRONMENT
+            # ----------------------------------
+            echo "== Fetching production environment =="
+
             infisical export \
               --projectId="${LMS_INFISICAL_PROJECT_ID}" \
               --env="${INFISICAL_ENV_SLUG}" \
               --path="/lms_go" \
-              --format=dotenv --token="${INFISICAL_TOKEN}" > .env
+              --format=dotenv \
+              --token="${INFISICAL_TOKEN}" > .env.tmp
 
+            test -s .env.tmp
+            mv .env.tmp .env
+            chmod 600 .env
 
-            rm -f /tmp/infisical_token
+            rm -f "$TOKEN_FILE"
+            trap - EXIT
+            unset INFISICAL_TOKEN
+            unset INFISICAL_CLIENT_SECRET
 
-            echo "== logging into ghcr =="
-            echo "${GHCR_PAT}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+            # ----------------------------------
+            # GHCR AUTHENTICATION
+            # ----------------------------------
+            echo "== Logging into GHCR =="
 
-            echo "== pulling new image =="
-            docker pull "${IMAGE}:${SHA}"
+            echo "${GHCR_PAT}" | docker login ghcr.io \
+              -u "${GHCR_USER}" \
+              --password-stdin
 
-            echo "== saving current image for rollback =="
-            PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' lms_go_api 2>/dev/null || echo "")
-            echo "$PREVIOUS_IMAGE" > /opt/lms_go/.last_image
+            # ----------------------------------
+            # PULL NEW IMAGE
+            # ----------------------------------
+            echo "== Pulling production image =="
 
-            echo "== starting postgres and redis =="
-            docker compose -f docker-compose.prod.yml up -d db redis
+            docker pull "$RELEASE_IMAGE"
 
-            echo "== waiting for database and redis to become healthy =="
-            for i in $(seq 1 30); do
-              db_status=$(docker inspect --format='{{.State.Health.Status}}' lms_go-db-1 2>/dev/null || echo "starting")
-              redis_status=$(docker inspect --format='{{.State.Health.Status}}' lms_go-redis-1 2>/dev/null || echo "starting")
-              [ "$db_status" = "healthy" ] && [ "$redis_status" = "healthy" ] && break
-              [ "$i" -eq 30 ] && { echo "database/redis did not become healthy in time"; exit 1; }
-              sleep 2
+            # ----------------------------------
+            # VERIFY COMPOSE CONFIGURATION
+            # ----------------------------------
+            echo "== Checking compose configuration =="
+
+            IMAGE="$RELEASE_IMAGE" \
+              docker compose -f "$COMPOSE_FILE" config -q
+
+            # ----------------------------------
+            # SAVE PREVIOUS IMAGE
+            # ----------------------------------
+            echo "== Saving previous image =="
+
+            OLD_CONTAINER=$(
+              IMAGE="$RELEASE_IMAGE" \
+              docker compose -f "$COMPOSE_FILE" ps -q api
+            )
+
+            PREVIOUS_IMAGE=""
+
+            if [ -n "$OLD_CONTAINER" ]; then
+              PREVIOUS_IMAGE=$(
+                docker inspect \
+                  --format='{{.Config.Image}}' \
+                  "$OLD_CONTAINER"
+              )
+            fi
+
+            echo "$PREVIOUS_IMAGE" > .last_image
+
+            # ----------------------------------
+            # START DATABASE AND REDIS
+            # ----------------------------------
+            echo "== Starting database and Redis =="
+
+            IMAGE="$RELEASE_IMAGE" \
+              docker compose -f "$COMPOSE_FILE" up -d \
+              --no-build db redis
+
+            # ----------------------------------
+            # WAIT FOR DEPENDENCIES
+            # ----------------------------------
+            echo "== Waiting for healthy services =="
+
+            for service in db redis; do
+              READY=0
+
+              for i in $(seq 1 30); do
+                CONTAINER=$(
+                  IMAGE="$RELEASE_IMAGE" \
+                  docker compose -f "$COMPOSE_FILE" \
+                    ps -q "$service"
+                )
+
+                if [ -n "$CONTAINER" ]; then
+                  STATUS=$(
+                    docker inspect \
+                      --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' \
+                      "$CONTAINER"
+                  )
+
+                  if [ "$STATUS" = "healthy" ]; then
+                    READY=1
+                    break
+                  fi
+                fi
+
+                sleep 2
+              done
+
+              if [ "$READY" -ne 1 ]; then
+                echo "$service did not become healthy"
+                exit 1
+              fi
+
+              echo "$service is healthy"
             done
 
+            # ----------------------------------
+            # RUN DATABASE MIGRATIONS
+            # ----------------------------------
+            echo "== Running database migrations =="
 
-            echo "Using image: ${IMAGE}:${SHA}"
-            IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.prod.yml config | grep image
-
-
-            echo "========== STEP 1: Starting migration =========="
             set -a
             . ./.env
             set +a
-            
+
             MIGRATION_DB_URL="postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
-            
-            docker run --rm \
+
+            unset DB_PASSWORD
+
+            IMAGE="$RELEASE_IMAGE" \
+              docker compose -f "$COMPOSE_FILE" run \
+              --rm \
+              --no-deps \
               --entrypoint migrate \
-              --network host \
-              "${IMAGE}:${SHA}" \
+              api \
               -path=/app/migrations \
               -database "$MIGRATION_DB_URL" \
               up
 
-            echo "========== STEP 2: Migration finished =========="
+            unset MIGRATION_DB_URL
 
-            echo "========== STEP 3: Starting API =========="
-            IMAGE="${IMAGE}:${SHA}" docker compose -f docker-compose.prod.yml up -d --no-deps api
-            echo "========== STEP 4: API started =========="
+            echo "== Migrations completed =="
 
-            echo "========== STEP 5: Starting health check =========="
-            HEALTHY=0
+            # ----------------------------------
+            # START NEW API
+            # ----------------------------------
+            echo "== Starting new API container =="
 
-            for i in $(seq 1 30); do
-              echo "Health check attempt $i"
+            if ! IMAGE="$RELEASE_IMAGE" \
+              docker compose -f "$COMPOSE_FILE" up \
+                -d --no-deps --no-build \
+                --force-recreate api; then
+              echo "API startup failed"
+              DEPLOY_FAILED=1
+            else
+              DEPLOY_FAILED=0
+            fi
 
-              if curl -fsS http://localhost:8006/api/v1/health >/dev/null; then
-                echo "Health check passed"
-                HEALTHY=1
-                break
+            # ----------------------------------
+            # VERIFY DEPLOYED IMAGE AND HEALTH
+            # ----------------------------------
+            if [ "$DEPLOY_FAILED" -eq 0 ]; then
+              echo "== Verifying deployed image =="
+
+              API_CONTAINER=$(
+                IMAGE="$RELEASE_IMAGE" \
+                docker compose -f "$COMPOSE_FILE" ps -q api
+              )
+
+              if [ -z "$API_CONTAINER" ]; then
+                DEPLOY_FAILED=1
+              else
+                RUNNING_IMAGE=$(
+                  docker inspect \
+                    --format='{{.Config.Image}}' \
+                    "$API_CONTAINER"
+                )
+
+                if [ "$RUNNING_IMAGE" != "$RELEASE_IMAGE" ]; then
+                  echo "Running image mismatch"
+                  DEPLOY_FAILED=1
+                fi
               fi
+            fi
 
-              sleep 2
-            done
+            if [ "$DEPLOY_FAILED" -eq 0 ]; then
+              echo "== Checking API health =="
 
-            echo "========== STEP 6: Health check finished =========="
+              HEALTHY=0
 
-            if [ "$HEALTHY" -ne 1 ]; then
-              echo "health check failed, rolling back"
+              for i in $(seq 1 30); do
+                if curl -fsS \
+                  http://localhost:8006/api/v1/health \
+                  > /dev/null; then
+
+                  HEALTHY=1
+                  break
+                fi
+
+                sleep 2
+              done
+
+              if [ "$HEALTHY" -ne 1 ]; then
+                DEPLOY_FAILED=1
+              fi
+            fi
+
+            # ----------------------------------
+            # ROLLBACK ON FAILURE
+            # ----------------------------------
+            if [ "$DEPLOY_FAILED" -ne 0 ]; then
+              echo "== Deployment failed =="
+
               if [ -n "$PREVIOUS_IMAGE" ]; then
-                IMAGE="$PREVIOUS_IMAGE" docker compose -f docker-compose.prod.yml up -d --no-deps --wait api
+                echo "== Rolling back API image =="
+
+                IMAGE="$PREVIOUS_IMAGE" \
+                  docker compose -f "$COMPOSE_FILE" up \
+                  -d --no-deps --no-build \
+                  --force-recreate api
+
+                echo "Previous API image restored"
+              else
+                echo "No previous image available"
               fi
-              echo "== docker image cleanup =="
-              docker image prune -f
+
               exit 1
             fi
 
-            echo "== docker image cleanup =="
+            # ----------------------------------
+            # CLEANUP
+            # ----------------------------------
+            echo "== Cleaning unused Docker images =="
+
             docker image prune -f
-            echo "deploy succeeded"
+
+            echo "========== DEPLOYMENT SUCCESSFUL =========="
+            BASH
+
         env:
           IMAGE: ${{ env.IMAGE }}
           SHA: ${{ env.SHA }}
@@ -221,33 +430,48 @@ jobs:
           INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           LMS_INFISICAL_PROJECT_ID: ${{ secrets.LMS_INFISICAL_PROJECT_ID }}
           INFISICAL_ENV_SLUG: prod
-          GHCR_USER: ${{ github.actor }}
-          GHCR_PAT: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ secrets.GHCR_USERNAME }}
+          GHCR_PAT: ${{ secrets.GHCR_READ_PAT }}
 
+  # -----------------------------------------
+  # 5. NOTIFY PR
+  # -----------------------------------------
   notify-pr:
-    needs: deploy-to-vps
+    needs:
+      - validate-payload
+      - build-and-push-image
+      - ship-compose-file
+      - deploy-to-vps
+
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
+
     steps:
-      - name: Comment deployment status on PR (success)
+      - name: Notify successful deployment
         if: needs.deploy-to-vps.result == 'success' && env.PR_NUMBER != ''
         run: |
           set -euo pipefail
+
           curl -fsS -X POST \
-            -H "Authorization: token ${{ secrets.LMS_PRIVATE_REPO_PAT }}" \
+            -H "Authorization: Bearer ${{ secrets.LMS_PRIVATE_REPO_PAT }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
-            -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-                '{body: ("✅ Staging deploy succeeded for `" + $sha + "`\n\n" + $run)}')"
+            -d "$(jq -cn \
+              --arg sha "$SHA" \
+              --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              '{body: ("✅ Production deploy succeeded for `" + $sha + "`\n\n" + $run)}')"
 
-      - name: Comment deployment status on PR (failure)
+      - name: Notify failed deployment
         if: needs.deploy-to-vps.result != 'success' && env.PR_NUMBER != ''
         run: |
           set -euo pipefail
+
           curl -fsS -X POST \
-            -H "Authorization: token ${{ secrets.LMS_PRIVATE_REPO_PAT }}" \
+            -H "Authorization: Bearer ${{ secrets.LMS_PRIVATE_REPO_PAT }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/comments" \
-            -d "$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-                '{body: ("❌ Staging deploy failed for `" + $sha + "` (rolled back if a previous image existed)\n\n" + $run)}')"
+            -d "$(jq -cn \
+              --arg sha "$SHA" \
+              --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              '{body: ("❌ Production deploy failed for `" + $sha + "`\n\n" + $run)}')"
