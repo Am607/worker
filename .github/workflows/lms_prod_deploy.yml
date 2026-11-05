@@ -430,8 +430,8 @@ jobs:
           INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           LMS_INFISICAL_PROJECT_ID: ${{ secrets.LMS_INFISICAL_PROJECT_ID }}
           INFISICAL_ENV_SLUG: prod
-          GHCR_USER: Am607
-          GHCR_PAT: ${{ secrets.GHCR_READ_PAT }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_PAT: ${{ secrets.GITHUB_TOKEN }}
 
   # -----------------------------------------
   # 5. NOTIFY PR
