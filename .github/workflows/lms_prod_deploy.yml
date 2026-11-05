@@ -300,22 +300,23 @@ jobs:
               echo "$service is healthy"
             done
 
+
             # ----------------------------------
             # RUN DATABASE MIGRATIONS
             # ----------------------------------
             echo "== Running database migrations =="
-
-            # Read DB_URL from the API container's .env (Infisical).
-            # It must contain a URL-encoded password.
+            
             IMAGE="$IMAGE" \
               docker compose -f "$COMPOSE_FILE" run \
+              -T \
               --rm \
               --no-deps \
               --entrypoint /bin/sh \
               api \
               -ec 'test -n "$DB_URL" || { echo "DB_URL missing"; exit 1; }; exec migrate -path=/app/migrations -database "$DB_URL" up'
-
+            
             echo "== Migrations completed =="
+
 
             # ----------------------------------
             # START NEW API
