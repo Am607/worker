@@ -111,10 +111,10 @@ jobs:
         id: deploy
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.ORACLE_HOST }}
-          username: ${{ secrets.ORACLE_USER }}
-          key: ${{ secrets.ORACLE_SSH_KEY }}
-          port: ${{ secrets.ORACLE_SSH_PORT || 22 }}
+          host: ${{ secrets.PROD_ORACLE_HOST }}
+          username: ${{ secrets.PROD_ORACLE_USER }}
+          key: ${{ secrets.PROD_ORACLE_SSH_KEY }}
+          port: ${{ secrets.PROD_ORACLE_SSH_PORT || 22 }}
           envs: IMAGE,SHA,INFISICAL_CLIENT_ID,INFISICAL_CLIENT_SECRET,LMS_INFISICAL_PROJECT_ID,INFISICAL_ENV_SLUG,GHCR_USER,GHCR_PAT
           script: |
             set -euo pipefail
