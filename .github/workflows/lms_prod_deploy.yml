@@ -119,8 +119,8 @@ jobs:
 
           ls -la
 
-          if [ ! -f docker-compose.prod.yml ]; then
-            echo "docker-compose.prod.yml not found!"
+          if [ ! -f docker-compose.yml ]; then
+            echo "docker-compose.yml not found!"
             exit 1
           fi
 
@@ -133,7 +133,7 @@ jobs:
           username: ${{ secrets.PROD_ORACLE_USER }}
           key: ${{ secrets.PROD_ORACLE_SSH_KEY }}
           port: ${{ secrets.PROD_ORACLE_SSH_PORT || 22 }}
-          source: "docker-compose.prod.yml"
+          source: "docker-compose.yml"
           target: "/opt/lms_go/"
           overwrite: true
 
@@ -164,7 +164,7 @@ jobs:
             cd /opt/lms_go
 
             RELEASE_IMAGE="${IMAGE}:${SHA}"
-            COMPOSE_FILE="docker-compose.prod.yml"
+            COMPOSE_FILE="docker-compose.yml"
 
             echo "========== PRODUCTION DEPLOYMENT =========="
             echo "Deploying: ${RELEASE_IMAGE}"
