@@ -163,11 +163,11 @@ jobs:
 
             cd /opt/lms_go
 
-            RELEASE_IMAGE="${IMAGE}:${SHA}"
+            IMAGE="${IMAGE}:${SHA}"
             COMPOSE_FILE="docker-compose.yml"
 
             echo "========== PRODUCTION DEPLOYMENT =========="
-            echo "Deploying: ${RELEASE_IMAGE}"
+            echo "Deploying: ${IMAGE}"
 
             # ----------------------------------
             # INFISICAL AUTHENTICATION
@@ -220,14 +220,14 @@ jobs:
             # ----------------------------------
             echo "== Pulling production image =="
 
-            docker pull "$RELEASE_IMAGE"
+            docker pull "$IMAGE"
 
             # ----------------------------------
             # VERIFY COMPOSE CONFIGURATION
             # ----------------------------------
             echo "== Checking compose configuration =="
 
-            IMAGE="$RELEASE_IMAGE" \
+            IMAGE="$IMAGE" \
               docker compose -f "$COMPOSE_FILE" config -q
 
             # ----------------------------------
@@ -236,7 +236,7 @@ jobs:
             echo "== Saving previous image =="
 
             OLD_CONTAINER=$(
-              IMAGE="$RELEASE_IMAGE" \
+              IMAGE="$IMAGE" \
               docker compose -f "$COMPOSE_FILE" ps -q api
             )
 
@@ -257,7 +257,7 @@ jobs:
             # ----------------------------------
             echo "== Starting database and Redis =="
 
-            IMAGE="$RELEASE_IMAGE" \
+            IMAGE="$IMAGE" \
               docker compose -f "$COMPOSE_FILE" up -d \
               --no-build db redis
 
@@ -271,7 +271,7 @@ jobs:
 
               for i in $(seq 1 30); do
                 CONTAINER=$(
-                  IMAGE="$RELEASE_IMAGE" \
+                  IMAGE="$IMAGE" \
                   docker compose -f "$COMPOSE_FILE" \
                     ps -q "$service"
                 )
@@ -307,7 +307,7 @@ jobs:
 
             # Read DB_URL from the API container's .env (Infisical).
             # It must contain a URL-encoded password.
-            IMAGE="$RELEASE_IMAGE" \
+            IMAGE="$IMAGE" \
               docker compose -f "$COMPOSE_FILE" run \
               --rm \
               --no-deps \
@@ -322,7 +322,7 @@ jobs:
             # ----------------------------------
             echo "== Starting new API container =="
 
-            if ! IMAGE="$RELEASE_IMAGE" \
+            if ! IMAGE="$IMAGE" \
               docker compose -f "$COMPOSE_FILE" up \
                 -d --no-deps --no-build \
                 --force-recreate api; then
@@ -339,7 +339,7 @@ jobs:
               echo "== Verifying deployed image =="
 
               API_CONTAINER=$(
-                IMAGE="$RELEASE_IMAGE" \
+                IMAGE="$IMAGE" \
                 docker compose -f "$COMPOSE_FILE" ps -q api
               )
 
@@ -352,7 +352,7 @@ jobs:
                     "$API_CONTAINER"
                 )
 
-                if [ "$RUNNING_IMAGE" != "$RELEASE_IMAGE" ]; then
+                if [ "$RUNNING_IMAGE" != "$IMAGE" ]; then
                   echo "Running image mismatch"
                   DEPLOY_FAILED=1
                 fi
