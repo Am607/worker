@@ -305,25 +305,15 @@ jobs:
             # ----------------------------------
             echo "== Running database migrations =="
 
-            set -a
-            . ./.env
-            set +a
-
-            MIGRATION_DB_URL="postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
-
-            unset DB_PASSWORD
-
+            # Read DB_URL from the API container's .env (Infisical).
+            # It must contain a URL-encoded password.
             IMAGE="$RELEASE_IMAGE" \
               docker compose -f "$COMPOSE_FILE" run \
               --rm \
               --no-deps \
-              --entrypoint migrate \
+              --entrypoint /bin/sh \
               api \
-              -path=/app/migrations \
-              -database "$MIGRATION_DB_URL" \
-              up
-
-            unset MIGRATION_DB_URL
+              -ec 'test -n "$DB_URL" || { echo "DB_URL missing"; exit 1; }; exec migrate -path=/app/migrations -database "$DB_URL" up'
 
             echo "== Migrations completed =="
 
