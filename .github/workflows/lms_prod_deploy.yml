@@ -132,7 +132,7 @@ jobs:
           host: ${{ secrets.PROD_ORACLE_HOST }}
           username: ${{ secrets.PROD_ORACLE_USER }}
           key: ${{ secrets.PROD_ORACLE_SSH_KEY }}
-          port: ${{ secrets.PROD_ORACLE_SSH_PORT || 22 }}
+          port: 22
           source: "docker-compose.yml"
           target: "/opt/lms_go/"
           overwrite: true
