@@ -430,7 +430,7 @@ jobs:
           INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           LMS_INFISICAL_PROJECT_ID: ${{ secrets.LMS_INFISICAL_PROJECT_ID }}
           INFISICAL_ENV_SLUG: prod
-          GHCR_USER: ${{ secrets.GHCR_USERNAME }}
+          GHCR_USER: Am607
           GHCR_PAT: ${{ secrets.GHCR_READ_PAT }}
 
   # -----------------------------------------
