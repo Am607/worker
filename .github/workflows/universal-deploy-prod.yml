@@ -209,13 +209,21 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SHA"
 
           if [[ "$DEPLOY_ENV" == prod ]]; then
-            [[ $(jq -r '.merged' <<< "$pr") == true ]]
-            [[ $(jq -r '.merge_commit_sha' <<< "$pr") == "$SHA" ]]
-            git merge-base --is-ancestor \
-              "$SHA" "refs/remotes/origin/${BRANCH}" || {
-              echo "Production commit is not on the approved branch"
-              exit 1
-            }
+            if [[ $(jq -r '.merged' <<< "$pr") == true ]]; then
+              [[ $(jq -r '.merge_commit_sha' <<< "$pr") == "$SHA" ]]
+              git merge-base --is-ancestor \
+                "$SHA" "refs/remotes/origin/${BRANCH}" || {
+                echo "Production commit is not on the approved branch"
+                exit 1
+              }
+            else
+              [[ $(jq -r '.state' <<< "$pr") == open ]]
+              [[ $(jq -r '.head.repo.full_name' <<< "$pr") == "$APPROVED_REPO" ]]
+              [[ $(jq -r '.head.sha' <<< "$pr") == "$SHA" ]] || {
+                echo "Production commit is no longer the PR head"
+                exit 1
+              }
+            fi
           else
             [[ $(jq -r '.state' <<< "$pr") == open ]]
             [[ $(jq -r '.head.repo.full_name' <<< "$pr") == "$APPROVED_REPO" ]]
