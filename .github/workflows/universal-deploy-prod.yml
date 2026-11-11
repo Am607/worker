@@ -1,0 +1,226 @@
+name: Universal Docker Production Deploy
+
+on:
+  repository_dispatch:
+    types: [deploy-prod]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: universal-prod-${{ github.event.client_payload.repository }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy approved Docker project
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    steps:
+      - name: Checkout central deployment repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate payload against central allowlist
+        id: cfg
+        shell: bash
+        env:
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+        run: |
+          set -euo pipefail
+          echo "$PAYLOAD" | jq -e 'type == "object"' >/dev/null
+          repo=$(jq -er '.repository | select(type == "string")' <<< "$PAYLOAD")
+          sha=$(jq -er '.sha | select(type == "string")' <<< "$PAYLOAD")
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid SHA'; exit 1; }
+          jq -e --arg r "$repo" 'has($r)' .github/deploy/projects.json >/dev/null || {
+            echo 'Repository is not approved'; exit 1;
+          }
+          # Trigger-provided Infisical location must exactly match central approved config.
+          for k in project_slug environment secret_path; do
+            expected=$(jq -er --arg r "$repo" --arg k "$k" '.[$r][$k]' .github/deploy/projects.json)
+            supplied=$(jq -er --arg k "$k" '.[$k] | select(type == "string")' <<< "$PAYLOAD")
+            [[ "$supplied" == "$expected" ]] || { echo "Unapproved $k"; exit 1; }
+          done
+          config=$(jq -c --arg r "$repo" '.[$r]' .github/deploy/projects.json)
+          image=$(jq -r '.image' <<< "$config")
+          branch=$(jq -r '.branch' <<< "$config")
+          compose=$(jq -r '.compose_file' <<< "$config")
+          path=$(jq -r '.deploy_path' <<< "$config")
+          project=$(jq -r '.project_name' <<< "$config")
+          app=$(jq -r '.app_service' <<< "$config")
+          migration=$(jq -r '.migration_service // ""' <<< "$config")
+          health=$(jq -r '.health_url' <<< "$config")
+          dependencies=$(jq -r '.dependencies | join(",")' <<< "$config")
+          [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$image" =~ ^ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+$ ]]
+          [[ "$path" =~ ^/opt/[A-Za-z0-9_.-]+$ ]]
+          [[ "$compose" =~ ^[A-Za-z0-9_.-]+\.ya?ml$ ]]
+          [[ "$project" =~ ^[A-Za-z0-9_-]+$ ]]
+          [[ "$app" =~ ^[A-Za-z0-9_-]+$ ]]
+          [[ -z "$migration" || "$migration" =~ ^[A-Za-z0-9_-]+$ ]]
+          [[ "$dependencies" =~ ^[A-Za-z0-9_,-]*$ ]]
+          [[ "$health" =~ ^http://127\.0\.0\.1:[0-9]+/[A-Za-z0-9_./?=&%-]*$ ]]
+          [[ "$branch" =~ ^[A-Za-z0-9_.-]+$ ]]
+          {
+            echo "repo=$repo"
+            echo "sha=$sha"
+            echo "image=$image"
+            echo "branch=$branch"
+            echo "compose=$compose"
+            echo "deploy_path=$path"
+            echo "project=$project"
+            echo "app=$app"
+            echo "migration=$migration"
+            echo "health=$health"
+            echo "dependencies=$dependencies"
+            echo "infisical_project=$(jq -r '.project_slug' <<< "$config")"
+            echo "infisical_env=$(jq -r '.environment' <<< "$config")"
+            echo "infisical_path=$(jq -r '.secret_path' <<< "$config")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fetch all project secrets (Infisical OIDC)
+        uses: Infisical/secrets-action@v1.0.16
+        with:
+          method: oidc
+          identity-id: ${{ vars.INFISICAL_IDENTITY_ID }}
+          project-slug: ${{ steps.cfg.outputs.infisical_project }}
+          env-slug: ${{ steps.cfg.outputs.infisical_env }}
+          secret-path: ${{ steps.cfg.outputs.infisical_path }}
+          recursive: false
+
+      - name: Verify required Infisical secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in REPO_READ_PAT GHCR_USERNAME GHCR_PAT SERVER_HOST SERVER_USER SERVER_SSH_PRIVATE_KEY SSH_KNOWN_HOSTS APP_ENV; do
+            [[ -n "${!name:-}" ]] || { echo "Missing Infisical secret: $name"; exit 1; }
+          done
+          [[ "${SERVER_PORT:-22}" =~ ^[0-9]{1,5}$ ]] || exit 1
+
+      - name: Checkout approved private source at exact commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.cfg.outputs.repo }}
+          ref: ${{ steps.cfg.outputs.sha }}
+          token: ${{ env.REPO_READ_PAT }}
+          persist-credentials: false
+          fetch-depth: 0
+          path: source
+
+      - name: Verify commit is in approved deployment branch
+        shell: bash
+        env:
+          SHA: ${{ steps.cfg.outputs.sha }}
+          BRANCH: ${{ steps.cfg.outputs.branch }}
+        run: |
+          set -euo pipefail
+          cd source
+          test "$(git rev-parse HEAD)" = "$SHA"
+          git fetch --no-tags origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+          git merge-base --is-ancestor "$SHA" "refs/remotes/origin/${BRANCH}" || {
+            echo 'Commit is not on the approved deployment branch'; exit 1;
+          }
+
+      - name: Confirm Docker inputs exist
+        shell: bash
+        env:
+          COMPOSE_FILE: ${{ steps.cfg.outputs.compose }}
+        run: |
+          set -euo pipefail
+          test -f source/Dockerfile
+          test -f "source/$COMPOSE_FILE"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ env.GHCR_USERNAME }}
+          password: ${{ env.GHCR_PAT }}
+
+      - name: Build and push immutable image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./source
+          file: ./source/Dockerfile
+          push: true
+          tags: ${{ steps.cfg.outputs.image }}:${{ steps.cfg.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Secure SSH setup and deploy to server
+        shell: bash
+        env:
+          IMAGE: ${{ steps.cfg.outputs.image }}:${{ steps.cfg.outputs.sha }}
+          DEPLOY_PATH: ${{ steps.cfg.outputs.deploy_path }}
+          COMPOSE_FILE: ${{ steps.cfg.outputs.compose }}
+          PROJECT: ${{ steps.cfg.outputs.project }}
+          APP: ${{ steps.cfg.outputs.app }}
+          MIGRATION: ${{ steps.cfg.outputs.migration }}
+          DEPENDENCIES: ${{ steps.cfg.outputs.dependencies }}
+          HEALTH_URL: ${{ steps.cfg.outputs.health }}
+        run: |
+          set -euo pipefail
+          umask 077
+          temp=$(mktemp -d)
+          trap 'rm -rf "$temp"' EXIT
+          printf '%s\n' "$SERVER_SSH_PRIVATE_KEY" > "$temp/id_ed25519"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$temp/known_hosts"
+          printf '%s' "$APP_ENV" > "$temp/app.env"
+          chmod 600 "$temp"/*
+          port="${SERVER_PORT:-22}"
+          ssh_opts=(-i "$temp/id_ed25519" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temp/known_hosts" -p "$port")
+          scp_opts=(-i "$temp/id_ed25519" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temp/known_hosts" -P "$port")
+          # SERVER_HOST and SERVER_USER are secrets but also must be safe as SSH operands.
+          [[ "$SERVER_HOST" =~ ^[a-zA-Z0-9.-]+$ ]]
+          [[ "$SERVER_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]
+          [[ "$GHCR_USERNAME" =~ ^[a-zA-Z0-9_.-]+$ ]]
+          target="${SERVER_USER}@${SERVER_HOST}"
+          staging="/tmp/deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          ssh "${ssh_opts[@]}" "$target" "umask 077; mkdir -m 700 -p '$staging'"
+          cleanup() { ssh "${ssh_opts[@]}" "$target" "rm -rf '$staging'" || true; }
+          trap 'cleanup; rm -rf "$temp"' EXIT
+          scp "${scp_opts[@]}" "source/$COMPOSE_FILE" "$target:$staging/docker-compose.yml"
+          scp "${scp_opts[@]}" "$temp/app.env" "$target:$staging/app.env"
+          # Authenticate Docker on remote machine without putting token in arguments.
+          printf '%s' "$GHCR_PAT" | ssh "${ssh_opts[@]}" "$target" \
+            "docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin"
+          # OpenSSH assembles remote command arguments into a shell string.
+          # Quote *each* argument, including an empty migration service.
+          printf -v quoted_args ' %q' \
+            "$DEPLOY_PATH" "$PROJECT" "$APP" "$MIGRATION" \
+            "$DEPENDENCIES" "$HEALTH_URL" "$IMAGE" "$staging"
+          ssh "${ssh_opts[@]}" "$target" \
+            "bash -s --${quoted_args}" < .github/scripts/deploy-remote.sh
+
+      - name: Job summary
+        if: success()
+        shell: bash
+        env:
+          REPO: ${{ steps.cfg.outputs.repo }}
+          SHA: ${{ steps.cfg.outputs.sha }}
+        run: |
+          printf '### Deployed %s\n\nCommit: `%s`\n' "$REPO" "$SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify source PR (optional)
+        if: always() && steps.cfg.outcome == 'success' && env.REPO_READ_PAT != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ env.REPO_READ_PAT }}
+          PR: ${{ github.event.client_payload.pr_number }}
+          REPO: ${{ steps.cfg.outputs.repo }}
+          RESULT: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          [[ "$PR" =~ ^[0-9]+$ ]] || exit 0
+          case "$RESULT" in
+            success) label='✅ Deployment succeeded' ;;
+            *) label='❌ Deployment failed' ;;
+          esac
+          body="${label}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh api "repos/$REPO/issues/$PR/comments" -f body="$body"
