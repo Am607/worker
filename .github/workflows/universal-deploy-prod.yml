@@ -1,23 +1,23 @@
 
-name: Universal Docker Production Deploy
+name: Universal Docker Deploy
 
 on:
   repository_dispatch:
-    types: [deploy-prod]
+    types: [deploy-prod, deploy-staging]
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: universal-prod-${{ github.event.client_payload.repository }}
+  group: universal-${{ github.event.client_payload.repository }}-${{ github.event.client_payload.environment }}
   cancel-in-progress: false
 
 jobs:
   deploy:
     name: Build and deploy approved Docker project
     runs-on: ubuntu-latest
-    environment: production
+    environment: ${{ github.event.client_payload.environment == 'staging' && 'staging' || 'production' }}
     timeout-minutes: 45
 
     steps:
@@ -37,6 +37,7 @@ jobs:
         shell: bash
         env:
           PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          DISPATCH_TYPE: ${{ github.event.action }}
         run: |
           set -euo pipefail
 
@@ -44,76 +45,94 @@ jobs:
 
           repo=$(jq -er '.repository | select(type == "string")' <<< "$PAYLOAD")
           sha=$(jq -er '.sha | select(type == "string")' <<< "$PAYLOAD")
+          supplied_project=$(jq -er '.project_slug | select(type == "string")' <<< "$PAYLOAD")
+          supplied_env=$(jq -er '.environment | select(type == "string")' <<< "$PAYLOAD")
+          supplied_secret_path=$(jq -er '.secret_path | select(type == "string")' <<< "$PAYLOAD")
+          supplied_deploy_path=$(jq -er '.deploy_path | select(type == "string")' <<< "$PAYLOAD")
+          health=$(jq -er '.health_url | select(type == "string")' <<< "$PAYLOAD")
+          pr_number=$(jq -er '.pr_number | select(type == "number" and . > 0 and . % 1 == 0)' <<< "$PAYLOAD")
 
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || {
             echo "Invalid commit SHA"
             exit 1
           }
 
-          jq -e --arg r "$repo" \
-            'has($r)' .github/deploy/projects.json >/dev/null || {
-            echo "Repository is not approved"
+          # Keep the source repository allowlist and application layout here;
+          # environment-specific deploy values come from the dispatch payload.
+          case "$repo" in
+            v-ashwin-dev/reels-api-soai)
+              image=ghcr.io/am607/video_stories
+              branch=main
+              compose=docker-compose.yml
+              path="$supplied_deploy_path"
+              project=video_stories
+              app=server
+              dependencies=db
+              ;;
+            *)
+              echo "Repository is not approved: $repo"
+              exit 1
+              ;;
+          esac
+
+          case "$DISPATCH_TYPE:$supplied_env" in
+            deploy-prod:prod)
+              project=video_stories
+              ;;
+            deploy-staging:staging)
+              project=video_stories_staging
+              ;;
+            *) echo "Dispatch event and environment do not match"; exit 1 ;;
+          esac
+          [[ "$supplied_project" =~ ^[A-Za-z0-9_-]+$ ]] || {
+            echo "Invalid Infisical project slug"
             exit 1
           }
-
-          for k in project_slug environment secret_path; do
-            expected=$(jq -er --arg r "$repo" --arg k "$k" \
-              '.[$r][$k]' .github/deploy/projects.json)
-
-            supplied=$(jq -er --arg k "$k" \
-              '.[$k] | select(type == "string")' <<< "$PAYLOAD")
-
-            [[ "$supplied" == "$expected" ]] || {
-              echo "Unapproved $k"
-              exit 1
-            }
-          done
-
-          config=$(jq -c --arg r "$repo" \
-            '.[$r]' .github/deploy/projects.json)
-
-          image=$(jq -r '.image' <<< "$config")
-          branch=$(jq -r '.branch' <<< "$config")
-          compose=$(jq -r '.compose_file' <<< "$config")
-          path=$(jq -r '.deploy_path' <<< "$config")
-          project=$(jq -r '.project_name' <<< "$config")
-          app=$(jq -r '.app_service' <<< "$config")
-          migration=$(jq -r '.migration_service // ""' <<< "$config")
-          health=$(jq -er '.health_url | select(type == "string")' <<< "$PAYLOAD")
-          dependencies=$(jq -r '.dependencies | join(",")' <<< "$config")
-
-          [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
-          [[ "$image" =~ ^ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+$ ]]
-          [[ "$path" =~ ^/opt/[A-Za-z0-9_.-]+$ ]]
-          [[ "$compose" =~ ^[A-Za-z0-9_.-]+\.ya?ml$ ]]
-          [[ "$project" =~ ^[A-Za-z0-9_-]+$ ]]
-          [[ "$app" =~ ^[A-Za-z0-9_-]+$ ]]
-          [[ -z "$migration" || "$migration" =~ ^[A-Za-z0-9_-]+$ ]]
-          [[ "$dependencies" =~ ^[A-Za-z0-9_,-]*$ ]]
+          [[ "$supplied_secret_path" =~ ^/[A-Za-z0-9_/-]*$ ]] || {
+            echo "Invalid Infisical secret path"
+            exit 1
+          }
+          [[ "$path" =~ ^/opt/[A-Za-z0-9_.-]+$ ]] || {
+            echo "Invalid deployment path"
+            exit 1
+          }
           health_pattern='^http://127\.0\.0\.1:[0-9]+/[A-Za-z0-9_./?=&%-]*$'
-          [[ "$health" =~ $health_pattern ]]
-          [[ "$branch" =~ ^[A-Za-z0-9_.-]+$ ]]
+          [[ "$health" =~ $health_pattern ]] || {
+            echo "Health URL must use loopback HTTP"
+            exit 1
+          }
 
           {
             echo "repo=$repo"
             echo "sha=$sha"
+            echo "pr_number=$pr_number"
+            echo "environment=$supplied_env"
             echo "image=$image"
             echo "branch=$branch"
             echo "compose=$compose"
             echo "deploy_path=$path"
             echo "project=$project"
             echo "app=$app"
-            echo "migration=$migration"
             echo "health=$health"
             echo "dependencies=$dependencies"
-            echo "infisical_project=$(jq -r '.project_slug' <<< "$config")"
-            echo "infisical_env=$(jq -r '.environment' <<< "$config")"
-            echo "infisical_path=$(jq -r '.secret_path' <<< "$config")"
+            echo "infisical_project=$supplied_project"
+            echo "infisical_env=$supplied_env"
+            echo "infisical_path=$supplied_secret_path"
           } >> "$GITHUB_OUTPUT"
 
       # -----------------------------------------
       # 3. FETCH INFISICAL SECRETS USING OIDC
       # -----------------------------------------
+      - name: Verify Infisical identity is configured
+        shell: bash
+        env:
+          IDENTITY_ID: ${{ vars.INFISICAL_IDENTITY_ID }}
+        run: |
+          test -n "$IDENTITY_ID" || {
+            echo "Set the INFISICAL_IDENTITY_ID repository variable"
+            exit 1
+          }
+
       - name: Fetch all project secrets (Infisical OIDC)
         uses: Infisical/secrets-action@v1.0.16
         with:
@@ -123,6 +142,7 @@ jobs:
           env-slug: ${{ steps.cfg.outputs.infisical_env }}
           secret-path: ${{ steps.cfg.outputs.infisical_path }}
           recursive: false
+          export-type: env
 
       # -----------------------------------------
       # 4. VALIDATE FETCHED SECRETS
@@ -171,21 +191,39 @@ jobs:
         env:
           SHA: ${{ steps.cfg.outputs.sha }}
           BRANCH: ${{ steps.cfg.outputs.branch }}
+          PR_NUMBER: ${{ steps.cfg.outputs.pr_number }}
+          DEPLOY_ENV: ${{ steps.cfg.outputs.environment }}
+          APPROVED_REPO: ${{ steps.cfg.outputs.repo }}
+          GH_TOKEN: ${{ env.REPO_READ_PAT }}
         run: |
           set -euo pipefail
+
+          pr=$(gh api "repos/$APPROVED_REPO/pulls/$PR_NUMBER")
+          [[ $(jq -r '.base.ref' <<< "$pr") == "$BRANCH" ]] || {
+            echo "Deployment PR does not target the approved branch"
+            exit 1
+          }
 
           cd source
 
           test "$(git rev-parse HEAD)" = "$SHA"
 
-          git fetch --no-tags origin \
-            "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
-
-          git merge-base --is-ancestor \
-            "$SHA" "refs/remotes/origin/${BRANCH}" || {
-            echo "Commit is not on the approved deployment branch"
-            exit 1
-          }
+          if [[ "$DEPLOY_ENV" == prod ]]; then
+            [[ $(jq -r '.merged' <<< "$pr") == true ]]
+            [[ $(jq -r '.merge_commit_sha' <<< "$pr") == "$SHA" ]]
+            git merge-base --is-ancestor \
+              "$SHA" "refs/remotes/origin/${BRANCH}" || {
+              echo "Production commit is not on the approved branch"
+              exit 1
+            }
+          else
+            [[ $(jq -r '.state' <<< "$pr") == open ]]
+            [[ $(jq -r '.head.repo.full_name' <<< "$pr") == "$APPROVED_REPO" ]]
+            [[ $(jq -r '.head.sha' <<< "$pr") == "$SHA" ]] || {
+              echo "Staging commit is no longer the PR head"
+              exit 1
+            }
+          fi
 
       # -----------------------------------------
       # 7. VERIFY DOCKER FILES
@@ -240,7 +278,6 @@ jobs:
           COMPOSE_FILE: ${{ steps.cfg.outputs.compose }}
           PROJECT: ${{ steps.cfg.outputs.project }}
           APP: ${{ steps.cfg.outputs.app }}
-          MIGRATION: ${{ steps.cfg.outputs.migration }}
           DEPENDENCIES: ${{ steps.cfg.outputs.dependencies }}
           HEALTH_URL: ${{ steps.cfg.outputs.health }}
         run: |
@@ -252,7 +289,8 @@ jobs:
 
           printf '%s\n' "$SERVER_SSH_PRIVATE_KEY" > "$temp/id_ed25519"
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$temp/known_hosts"
-          printf '%s' "$APP_ENV" > "$temp/app.env"
+          printf '%s' "$APP_ENV" > "$temp/.env"
+          test -s "$temp/.env"
 
           chmod 600 "$temp"/*
 
@@ -296,8 +334,8 @@ jobs:
             "$target:$staging/docker-compose.yml"
 
           scp "${scp_opts[@]}" \
-            "$temp/app.env" \
-            "$target:$staging/app.env"
+            "$temp/.env" \
+            "$target:$staging/.env"
 
           # Authenticate Docker on remote server
           printf '%s' "$GHCR_PAT" | \
@@ -309,16 +347,144 @@ jobs:
             "$DEPLOY_PATH" \
             "$PROJECT" \
             "$APP" \
-            "$MIGRATION" \
             "$DEPENDENCIES" \
             "$HEALTH_URL" \
             "$IMAGE" \
             "$staging"
 
-          # Run remote deployment script
+          # Deploy with the approved image and project configuration.
           ssh "${ssh_opts[@]}" "$target" \
-            "bash -s --${quoted_args}" \
-            < .github/scripts/deploy-remote.sh
+            "bash -s --${quoted_args}" <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+
+          deploy_path=$1
+          project=$2
+          app=$3
+          dependencies=$4
+          health_url=$5
+          image=$6
+          staging=$7
+
+          mkdir -p "$deploy_path"
+          cd "$deploy_path"
+
+          backup=$(mktemp -d "$deploy_path/.deploy-backup.XXXXXX")
+          old_env_file=.env
+          if [ ! -f .env ] && [ -f .env.prod ]; then
+            old_env_file=.env.prod
+          fi
+
+          for file in docker-compose.yml .env .env.prod; do
+            if [ -f "$file" ]; then
+              mkdir -p "$backup/$(dirname "$file")"
+              cp -p "$file" "$backup/$file"
+            fi
+          done
+
+          compose=(docker compose --env-file .env -p "$project" -f docker-compose.yml)
+          previous_image=""
+          old_container=$(docker ps \
+            --filter "label=com.docker.compose.project=$project" \
+            --filter "label=com.docker.compose.service=$app" \
+            --format '{{.ID}}' | head -n 1)
+          if [ -n "$old_container" ]; then
+            previous_image=$(docker inspect --format='{{.Config.Image}}' "$old_container")
+          fi
+
+          rollback() {
+            status=$?
+            trap - ERR
+            echo "Deployment failed; restoring previous configuration"
+            for file in docker-compose.yml .env .env.prod; do
+              if [ -f "$backup/$file" ]; then
+                cp -p "$backup/$file" "$file"
+              fi
+            done
+            if [ ! -f "$backup/.env" ]; then
+              rm -f .env
+            fi
+            if [ -n "$previous_image" ]; then
+              export IMAGE="$previous_image"
+              if [ "$old_env_file" = .env.prod ]; then
+                unset APP_ENV_FILE
+                compose=(docker compose --env-file .env.prod -p "$project" -f docker-compose.yml)
+              fi
+              "${compose[@]}" up -d --no-build --no-deps --force-recreate "$app" || true
+            fi
+            rm -r "$backup"
+            exit "$status"
+          }
+          trap rollback ERR
+
+          cp "$staging/docker-compose.yml" docker-compose.yml
+          cp "$staging/.env" .env
+          chmod 600 .env
+
+          export IMAGE="$image"
+          export APP_ENV_FILE=.env
+          "${compose[@]}" config -q
+          "${compose[@]}" pull "$app"
+
+          IFS=, read -r -a dependency_services <<< "$dependencies"
+          if [ "${#dependency_services[@]}" -gt 0 ]; then
+            "${compose[@]}" up -d --no-build "${dependency_services[@]}"
+            for service in "${dependency_services[@]}"; do
+              ready=0
+              for i in $(seq 1 30); do
+                container=$("${compose[@]}" ps -q "$service")
+                if [ -n "$container" ]; then
+                  state=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$container")
+                  if [ "$state" = healthy ]; then
+                    ready=1
+                    break
+                  fi
+                fi
+                sleep 2
+              done
+              if [ "$ready" -ne 1 ]; then
+                echo "$service did not become healthy"
+                false
+              fi
+            done
+          fi
+
+          "${compose[@]}" up -d --no-build --no-deps --force-recreate "$app"
+          app_container=$("${compose[@]}" ps -q "$app")
+          test -n "$app_container"
+          test "$(docker inspect --format='{{.Config.Image}}' "$app_container")" = "$image"
+
+          ready=0
+          for i in $(seq 1 30); do
+            state=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$app_container")
+            if [ "$state" = healthy ]; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "$app did not become healthy"
+            false
+          fi
+
+          ready=0
+          for i in $(seq 1 30); do
+            if curl --fail --silent --show-error "$health_url" >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "Health URL did not become ready: $health_url"
+            false
+          fi
+
+          trap - ERR
+          rm -r "$backup"
+          echo "Deployment healthy: $image"
+          REMOTE
 
       # -----------------------------------------
       # 12. DEPLOYMENT SUMMARY
