@@ -60,7 +60,7 @@ jobs:
           # Keep the source repository allowlist and application layout here;
           # environment-specific deploy values come from the dispatch payload.
           case "$repo" in
-            v-ashwin-dev/reels-api-soai)
+            Am607/qissaplay-backend)
               image=ghcr.io/am607/video_stories
               branch=main
               compose=docker-compose.yml
