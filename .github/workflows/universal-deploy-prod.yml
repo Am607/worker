@@ -494,10 +494,24 @@ jobs:
             fi
             sleep 2
           done
+          
           if [ "$ready" -ne 1 ]; then
-            echo "$app did not become healthy"
+            echo "Application did not become healthy"
+          
+            echo "=== Container status ==="
+            docker inspect "$app_container" \
+              --format 'Status={{.State.Status}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}'
+          
+            echo "=== Healthcheck output ==="
+            docker inspect "$app_container" \
+              --format '{{json .State.Health}}'
+          
+            echo "=== Application logs ==="
+            docker logs --tail 100 "$app_container" || true
+          
             false
           fi
+
 
           ready=0
           for i in $(seq 1 30); do
