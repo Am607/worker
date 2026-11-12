@@ -132,6 +132,17 @@ jobs:
             echo "Set the INFISICAL_IDENTITY_ID repository variable"
             exit 1
           }
+
+      - name: Fetch application secrets
+        uses: Infisical/secrets-action@v1.0.16
+        with:
+          method: oidc
+          identity-id: ${{ vars.INFISICAL_IDENTITY_ID }}
+          project-slug: ${{ github.event.client_payload.project_slug }}
+          env-slug: ${{ github.event.client_payload.environment }}
+          secret-path: ${{ github.event.client_payload.secret_path }}
+          recursive: false
+          export-type: env
       
       
       - name: Export application secrets
