@@ -152,6 +152,21 @@ jobs:
                 aws s3 cp "s3://${R2_BUCKET}/${SOURCE_KEY}" work/input \
                   --endpoint-url "${R2_ENDPOINT}" \
                   --no-progress
+
+      - name: Debug R2 source object
+        run: |
+          set -euo pipefail
+      
+          echo "Bucket: ${R2_BUCKET}"
+          echo "Source key: ${SOURCE_KEY}"
+      
+          PREFIX="${SOURCE_KEY%/*}/"
+      
+          aws s3api list-objects-v2 \
+            --bucket "${R2_BUCKET}" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --prefix "${PREFIX}" \
+            --output json
                   
 
       - name: Probe duration
