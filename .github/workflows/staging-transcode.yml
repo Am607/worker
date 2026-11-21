@@ -119,6 +119,19 @@ jobs:
             echo "AWS_REGION=auto"
           } >> "$GITHUB_ENV"
 
+      - name: Debug R2 connection
+        run: |
+          set -euo pipefail
+      
+          echo "Checking R2 bucket..."
+      
+          aws s3api list-objects-v2 \
+            --bucket "${R2_BUCKET}" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --prefix "raw/5/a795c172/" \
+            --query 'Contents[].Key' \
+            --output table      
+
       - name: Download raw video from R2
         run: |
           set -euo pipefail
