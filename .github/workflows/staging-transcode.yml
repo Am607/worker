@@ -118,56 +118,15 @@ jobs:
             echo "AWS_DEFAULT_REGION=auto"
             echo "AWS_REGION=auto"
           } >> "$GITHUB_ENV"
+          
 
-      - name: Debug R2 connection
+      - name: Download raw video from R2
         run: |
           set -euo pipefail
-
-          echo "Checking R2 bucket..."
-
-          aws s3api list-objects-v2 \
-            --bucket "${R2_BUCKET}" \
+          mkdir -p work
+          aws s3 cp "s3://${R2_BUCKET}/${SOURCE_KEY}" work/input \
             --endpoint-url "${R2_ENDPOINT}" \
-            --prefix "raw/5/a795c172/" \
-            --query 'Contents[].Key' \
-            --output table      
-
-
-      - name: Verify exact R2 source
-        run: |
-          set -euo pipefail
-
-          echo "Bucket: ${R2_BUCKET}"
-          echo "Source: ${SOURCE_KEY}"
-
-          aws s3api head-object \
-            --bucket "${R2_BUCKET}" \
-            --key "${SOURCE_KEY}" \
-            --endpoint-url "${R2_ENDPOINT}"
-
-            - name: Download raw video from R2
-              run: |
-                set -euo pipefail
-                mkdir -p work
-                aws s3 cp "s3://${R2_BUCKET}/${SOURCE_KEY}" work/input \
-                  --endpoint-url "${R2_ENDPOINT}" \
-                  --no-progress
-
-      - name: Debug R2 source object
-        run: |
-          set -euo pipefail
-      
-          echo "Bucket: ${R2_BUCKET}"
-          echo "Source key: ${SOURCE_KEY}"
-      
-          PREFIX="${SOURCE_KEY%/*}/"
-      
-          aws s3api list-objects-v2 \
-            --bucket "${R2_BUCKET}" \
-            --endpoint-url "${R2_ENDPOINT}" \
-            --prefix "${PREFIX}" \
-            --output json
-                  
+            --no-progress
 
       - name: Probe duration
         id: probe
