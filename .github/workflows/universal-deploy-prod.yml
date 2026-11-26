@@ -344,7 +344,18 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-
+          
+          # Use environment-specific project name if configured
+          PROJECT="${DOCKER_COMPOSE_PROJECT:-$PROJECT}"
+          
+          # Validate Docker Compose project name
+          [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || {
+            echo "Invalid Docker Compose project name"
+            exit 1
+          }
+          
+          echo "Docker Compose project: $PROJECT"
+          
           temp=$(mktemp -d)
           trap 'rm -rf "$temp"' EXIT
 
