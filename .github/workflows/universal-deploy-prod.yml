@@ -30,9 +30,9 @@ jobs:
           persist-credentials: false
 
       # -----------------------------------------
-      # 2. VALIDATE DEPLOYMENT PAYLOAD
+      # 2. PREPARE DEPLOYMENT CONFIGURATION
       # -----------------------------------------
-      - name: Validate payload against central allowlist
+      - name: Prepare deployment configuration
         id: cfg
         shell: bash
         env:
@@ -41,84 +41,75 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "$PAYLOAD" | jq -e 'type == "object"' >/dev/null
+          repo=$(jq -er '.repository' <<< "$PAYLOAD")
+          sha=$(jq -er '.sha' <<< "$PAYLOAD")
+          project_slug=$(jq -er '.project_slug' <<< "$PAYLOAD")
+          environment=$(jq -er '.environment' <<< "$PAYLOAD")
+          secret_path=$(jq -er '.secret_path' <<< "$PAYLOAD")
+          deploy_path=$(jq -er '.deploy_path' <<< "$PAYLOAD")
+          health=$(jq -er '.health_url' <<< "$PAYLOAD")
+          pr_number=$(jq -er '.pr_number' <<< "$PAYLOAD")
 
-          repo=$(jq -er '.repository | select(type == "string")' <<< "$PAYLOAD")
-          sha=$(jq -er '.sha | select(type == "string")' <<< "$PAYLOAD")
-          supplied_project=$(jq -er '.project_slug | select(type == "string")' <<< "$PAYLOAD")
-          supplied_env=$(jq -er '.environment | select(type == "string")' <<< "$PAYLOAD")
-          supplied_secret_path=$(jq -er '.secret_path | select(type == "string")' <<< "$PAYLOAD")
-          supplied_deploy_path=$(jq -er '.deploy_path | select(type == "string")' <<< "$PAYLOAD")
-          health=$(jq -er '.health_url | select(type == "string")' <<< "$PAYLOAD")
-          pr_number=$(jq -er '.pr_number | select(type == "number" and . > 0 and . % 1 == 0)' <<< "$PAYLOAD")
+          # Derive repository name
+          repo_name="${repo##*/}"
 
-          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "Invalid commit SHA"
-            exit 1
-          }
+          # Default application configuration
+          image="ghcr.io/${repo,,}"
+          branch=main
+          project="$repo_name"
+          app=web
+          dependencies="db redis"
 
-          # Keep the source repository allowlist and application layout here;
-          # environment-specific deploy values come from the dispatch payload.
-          case "$repo" in
-            Am607/qissaplay-backend)
-              image=ghcr.io/am607/video_stories
-              branch=main
+          # Select environment configuration
+          case "$DISPATCH_TYPE:$environment" in
+            deploy-prod:prod)
               compose=docker-compose.yml
-              path="$supplied_deploy_path"
-              project=video_stories
-              app=server
-              dependencies=db
               ;;
+
+            deploy-staging:staging)
+              compose=docker-compose.staging.yml
+              project="${project}_staging"
+              ;;
+
             *)
-              echo "Repository is not approved: $repo"
+              echo "Invalid deployment environment"
               exit 1
               ;;
           esac
 
-          case "$DISPATCH_TYPE:$supplied_env" in
-            deploy-prod:prod)
-              project=video_stories
-              ;;
-            deploy-staging:staging)
-              project=video_stories_staging
-              ;;
-            *) echo "Dispatch event and environment do not match"; exit 1 ;;
-          esac
-          [[ "$supplied_project" =~ ^[A-Za-z0-9_-]+$ ]] || {
-            echo "Invalid Infisical project slug"
+          # Minimal safety checks
+          [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+            echo "Invalid repository format"
             exit 1
           }
-          [[ "$supplied_secret_path" =~ ^/[A-Za-z0-9_/-]*$ ]] || {
-            echo "Invalid Infisical secret path"
-            exit 1
-          }
-          [[ "$path" =~ ^/opt/[A-Za-z0-9_.-]+$ ]] || {
-            echo "Invalid deployment path"
-            exit 1
-          }
-          health_pattern='^http://127\.0\.0\.1:[0-9]+/[A-Za-z0-9_./?=&%-]*$'
-          [[ "$health" =~ $health_pattern ]] || {
-            echo "Health URL must use loopback HTTP"
-            exit 1
-          }
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
 
+          # Deployment configuration
           {
             echo "repo=$repo"
             echo "sha=$sha"
             echo "pr_number=$pr_number"
-            echo "environment=$supplied_env"
+            echo "environment=$environment"
             echo "image=$image"
             echo "branch=$branch"
             echo "compose=$compose"
-            echo "deploy_path=$path"
+            echo "deploy_path=$deploy_path"
             echo "project=$project"
             echo "app=$app"
             echo "health=$health"
             echo "dependencies=$dependencies"
-            echo "infisical_project=$supplied_project"
-            echo "infisical_env=$supplied_env"
-            echo "infisical_path=$supplied_secret_path"
+            echo "infisical_project=$project_slug"
+            echo "infisical_env=$environment"
+            echo "infisical_path=$secret_path"
           } >> "$GITHUB_OUTPUT"
+
+          echo "Repository: $repo"
+          echo "Environment: $environment"
+          echo "Image: $image"
+          echo "Compose file: $compose"
+          echo "Project: $project"
+          echo "Deployment path: $deploy_path"
+          echo "Infisical project: $project_slug"
 
       # -----------------------------------------
       # 3. FETCH INFISICAL SECRETS USING OIDC
