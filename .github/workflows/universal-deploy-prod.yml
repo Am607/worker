@@ -50,15 +50,20 @@ jobs:
           health=$(jq -er '.health_url' <<< "$PAYLOAD")
           pr_number=$(jq -er '.pr_number' <<< "$PAYLOAD")
 
+          for value in "$repo" "$sha" "$project_slug" "$environment" "$secret_path" "$deploy_path" "$health" "$pr_number"; do
+            [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || {
+              echo "Invalid multiline deployment configuration"
+              exit 1
+            }
+          done
+
           # Derive repository name
           repo_name="${repo##*/}"
 
           # Default application configuration
           image="ghcr.io/${repo,,}"
           branch=main
-          project="$repo_name"
-          echo "app=$app"
-          echo "dependencies=$dependencies"
+          project="${repo_name,,}"
 
           # Select environment configuration
           case "$DISPATCH_TYPE:$environment" in
@@ -95,9 +100,7 @@ jobs:
             echo "compose=$compose"
             echo "deploy_path=$deploy_path"
             echo "project=$project"
-            echo "app=$app"
             echo "health=$health"
-            echo "dependencies=$dependencies"
             echo "infisical_project=$project_slug"
             echo "infisical_env=$environment"
             echo "infisical_path=$secret_path"
@@ -134,8 +137,8 @@ jobs:
           secret-path: ${{ github.event.client_payload.secret_path }}
           recursive: false
           export-type: env
-      
-      
+
+
       - name: Export application secrets
         uses: Infisical/secrets-action@v1.0.16
         with:
@@ -147,7 +150,7 @@ jobs:
           recursive: false
           export-type: file
           file-output-path: /app.env
-      
+
 
 
       # -----------------------------------------
@@ -251,6 +254,9 @@ jobs:
 
           cd source
 
+          test -f Dockerfile
+          test -f "$COMPOSE_FILE"
+
           config=$(docker compose \
             -f "$COMPOSE_FILE" \
             config \
@@ -349,6 +355,7 @@ jobs:
           ssh_opts=(
             -i "$temp/id_ed25519"
             -o IdentitiesOnly=yes
+            -o BatchMode=yes
             -o StrictHostKeyChecking=yes
             -o UserKnownHostsFile="$temp/known_hosts"
             -p "$port"
@@ -357,6 +364,7 @@ jobs:
           scp_opts=(
             -i "$temp/id_ed25519"
             -o IdentitiesOnly=yes
+            -o BatchMode=yes
             -o StrictHostKeyChecking=yes
             -o UserKnownHostsFile="$temp/known_hosts"
             -P "$port"
@@ -485,7 +493,7 @@ jobs:
                 container=$("${compose[@]}" ps -q "$service")
                 if [ -n "$container" ]; then
                   state=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$container")
-                  if [ "$state" = healthy ]; then
+                  if [ "$state" = healthy ] || { [ "$state" = no-healthcheck ] && [ "$(docker inspect --format='{{.State.Running}}' "$container")" = true ]; }; then
                     ready=1
                     break
                   fi
@@ -513,21 +521,21 @@ jobs:
             fi
             sleep 2
           done
-          
+
           if [ "$ready" -ne 1 ]; then
             echo "Application did not become healthy"
-          
+
             echo "=== Container status ==="
             docker inspect "$app_container" \
               --format 'Status={{.State.Status}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}'
-          
+
             echo "=== Healthcheck output ==="
             docker inspect "$app_container" \
               --format '{{json .State.Health}}'
-          
+
             echo "=== Application logs ==="
             docker logs --tail 100 "$app_container" || true
-          
+
             false
           fi
 
@@ -567,6 +575,7 @@ jobs:
       # 13. NOTIFY SOURCE PR
       # -----------------------------------------
       - name: Notify source PR (optional)
+        continue-on-error: true
         if: always() && steps.cfg.outcome == 'success' && env.REPO_READ_PAT != ''
         shell: bash
         env:
