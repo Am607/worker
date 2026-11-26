@@ -138,20 +138,19 @@ jobs:
           recursive: false
           export-type: env
 
-      - name: Debug SSH configuration
+      - name: Setup SSH known hosts
         shell: bash
         run: |
-          echo "SSH directory: $HOME/.ssh"
-      
-          if [ -z "${SSH_KNOWN_HOSTS:-}" ]; then
-            echo "ERROR: SSH_KNOWN_HOSTS is missing or empty"
-            exit 1
-          fi
-      
-          echo "SSH_KNOWN_HOSTS is available"
-      
-          ls -la ~/.ssh
-          ssh-keygen -lf ~/.ssh/known_hosts
+          set -euo pipefail
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          echo "SSH known_hosts configured successfully"
+          ssh-keygen -lf "$HOME/.ssh/known_hosts"
 
 
       - name: Export application secrets
