@@ -293,11 +293,25 @@ jobs:
             | join(",")
           ' <<< "$config")
 
+          # Optional one-off command (e.g. migrations) run in the new image
+          # before the app container is replaced. Declared per project via
+          # the "deploy.pre_deploy" label on the primary service.
+          pre_deploy=$(jq -r --arg app "$app" '
+            .services[$app].labels["deploy.pre_deploy"] // ""
+          ' <<< "$config")
+
+          [[ "$pre_deploy" != *$'\n'* && "$pre_deploy" != *$'\r'* ]] || {
+            echo "deploy.pre_deploy must be a single line"
+            exit 1
+          }
+
           echo "app=$app" >> "$GITHUB_OUTPUT"
           echo "dependencies=$dependencies" >> "$GITHUB_OUTPUT"
+          echo "pre_deploy=$pre_deploy" >> "$GITHUB_OUTPUT"
 
           echo "Application service: $app"
           echo "Dependencies: $dependencies"
+          echo "Pre-deploy command: ${pre_deploy:-<none>}"
 
       # -----------------------------------------
       # 8. SETUP DOCKER BUILDX
@@ -340,6 +354,7 @@ jobs:
           PROJECT: ${{ steps.cfg.outputs.project }}
           APP: ${{ steps.services.outputs.app }}
           DEPENDENCIES: ${{ steps.services.outputs.dependencies }}
+          PRE_DEPLOY: ${{ steps.services.outputs.pre_deploy }}
           HEALTH_URL: ${{ steps.cfg.outputs.health }}
         run: |
           set -euo pipefail
@@ -433,7 +448,8 @@ jobs:
             "$DEPENDENCIES" \
             "$HEALTH_URL" \
             "$IMAGE" \
-            "$staging"
+            "$staging" \
+            "$PRE_DEPLOY"
 
           # Deploy with the approved image and project configuration.
           ssh "${ssh_opts[@]}" "$target" \
@@ -448,6 +464,7 @@ jobs:
           health_url=$5
           image=$6
           staging=$7
+          pre_deploy=${8:-}
 
           mkdir -p "$deploy_path"
           cd "$deploy_path"
@@ -530,6 +547,15 @@ jobs:
                 false
               fi
             done
+          fi
+
+          # Run pre-deploy command (e.g. DB migrations) in a one-off container
+          # from the new image. Failure triggers rollback; the old app
+          # container keeps serving until this succeeds.
+          if [ -n "$pre_deploy" ]; then
+            echo "Running pre-deploy command: $pre_deploy"
+            "${compose[@]}" run --rm --no-deps -T "$app" sh -c "$pre_deploy"
+            echo "Pre-deploy command finished"
           fi
 
           "${compose[@]}" up -d --no-build --no-deps --force-recreate "$app"
