@@ -63,6 +63,31 @@ jobs:
           channel: stable
           cache: true
 
+      # --------------------------------------------
+      # Fetch Flutter configuration and create asset
+      # --------------------------------------------
+      - name: Fetch secrets from Infisical
+        uses: Infisical/secrets-action@v1.0.9
+        with:
+          client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          domain: https://app.infisical.com
+          project-slug: "soai"
+          env-slug: "prod"
+          secret-path: "/flutter"
+          export-type: env
+
+      - name: Create Flutter .env from Infisical
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${BASE_URL:?BASE_URL missing from Infisical}"
+          test -f pubspec.yaml
+          printf 'BASE_URL=%s\n' "$BASE_URL" > .env
+          test -s .env
+          echo "Flutter .env created successfully"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         
@@ -118,6 +143,14 @@ jobs:
       # Build and upload AAB to Google Play
       # Fastlane automatically calculates build number
       # --------------------------------------------
+      - name: Verify Flutter environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f pubspec.yaml
+          test -s .env
+          echo "Flutter environment verified successfully"
+
       - name: Build and upload Internal Testing release
         working-directory: android
         env:
@@ -317,6 +350,7 @@ jobs:
       - name: Remove signing material
         if: always()
         run: |
+          rm -f .env
           rm -f android/key.properties
           rm -f android/app/upload-keystore.jks
           rm -f "$RUNNER_TEMP/bundletool.jar"
